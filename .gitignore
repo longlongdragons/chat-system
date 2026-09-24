@@ -1,0 +1,11 @@
+# 密钥与敏感数据 —— 绝不入库
+secrets/
+data/
+
+# 本地便携工具链与数据库文件（仅本机运行用）
+tools/
+
+# 构建产物
+backend/bin/
+frontend/dist/
+frontend/node_modules/
