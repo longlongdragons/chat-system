@@ -202,21 +202,21 @@ func (r *Repo) ListForUser(ctx context.Context, userID int64) ([]*model.Conversa
 	for rows.Next() {
 		v := &model.ConversationView{}
 		var (
-			lastID, lastSeq, lastSenderID *int64
-			lastClientID                  *string
-			lastType                      *int16
-			lastContent                   []byte
-			lastQuote                     *int64
-			lastStatus                    *int16
-			lastCreated                   *time.Time
-			userA, userB                  *int64
+			lastID, lastConvID, lastSeq, lastSenderID *int64
+			lastClientID                              *string
+			lastType                                  *int16
+			lastContent                               []byte
+			lastQuote                                 *int64
+			lastStatus                                *int16
+			lastCreated                               *time.Time
+			userA, userB                              *int64
 		)
 		if err := rows.Scan(
 			&v.ID, &v.Type, &v.Title, &v.OwnerID, &v.LastMsgID, &v.LastMsgAt,
 			&v.MaxSeq, &v.Status, &v.CreatedAt,
 			&v.Member.Role, &v.Member.LastReadSeq, &v.Member.UnreadCount,
 			&v.Member.Pinned, &v.Member.Muted, &v.Member.JoinedAt,
-			&lastID, &lastSeq, &lastSenderID, &lastClientID, &lastType,
+			&lastID, &lastConvID, &lastSeq, &lastSenderID, &lastClientID, &lastType,
 			&lastContent, &lastQuote, &lastStatus, &lastCreated,
 			&userA, &userB,
 		); err != nil {
