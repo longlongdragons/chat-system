@@ -34,6 +34,11 @@ export const useChatStore = defineStore('chat', {
     activeConversationId: 0 as number,
     onlineUsers: new Set<number>(),
     unsubs: [] as Array<() => void>,
+    // 各会话中正在输入的用户：conversation_id → user_id → true（仅作存在性标记）。
+    // typing 是纯实时信号，收到后由 typingTimers 中的定时器在数秒后自动清除。
+    typingUsers: {} as Record<number, Record<number, true>>,
+    // typing 自动消失定时器：key 为 `${conversation_id}:${user_id}`
+    typingTimers: {} as Record<string, number>,
   }),
 
   getters: {
@@ -85,6 +90,7 @@ export const useChatStore = defineStore('chat', {
         client.on('message.ack', (ack: any) => this.onAck(ack)),
         client.on('message.read', (d: any) => this.onRead(d)),
         client.on('message.recall', (d: any) => this.onRecall(d)),
+        client.on('typing', (d: any) => this.onTyping(d)),
         client.on('presence', (d: any) => {
           if (d.status === 1) this.onlineUsers.add(d.user_id)
           else this.onlineUsers.delete(d.user_id)
@@ -112,6 +118,10 @@ export const useChatStore = defineStore('chat', {
       this.messages = {}
       this.activeConversationId = 0
       this.onlineUsers.clear()
+      // 清掉所有 typing 自动消失定时器，避免登出后还触发状态写入
+      Object.values(this.typingTimers).forEach((t) => clearTimeout(t))
+      this.typingTimers = {}
+      this.typingUsers = {}
     },
 
     async loadConversations() {
@@ -155,6 +165,9 @@ export const useChatStore = defineStore('chat', {
       list.push(msg)
       list.sort((a, b) => a.seq - b.seq)
       this.messages[msg.conversation_id] = list
+
+      // 对方的真实消息已送达，其"正在输入"状态立即失效（不必等定时器兜底）
+      this.clearTyping(msg.conversation_id, msg.sender_id)
 
       const conv = this.conversations.find((c) => c.id === msg.conversation_id)
       if (conv) {
@@ -208,6 +221,68 @@ export const useChatStore = defineStore('chat', {
       const list = this.messages[d.conversation_id] ?? []
       const msg = list.find((m) => m.id === d.message_id)
       if (msg) msg.status = 2
+    },
+
+    /**
+     * 收到对端 typing 帧：把该用户标记为"正在输入"，并启动 5 秒自动消失定时器
+     * （对端持续输入时会重复发帧刷新定时器，停止输入后提示自然消失）。
+     * 自己发出的 typing 回声直接忽略。
+     */
+    onTyping(d: { conversation_id: number; user_id: number }) {
+      if (!d || d.user_id === useAuthStore().user?.id) return
+      const bucket = { ...(this.typingUsers[d.conversation_id] ?? {}) }
+      bucket[d.user_id] = true
+      this.typingUsers[d.conversation_id] = bucket
+
+      const key = `${d.conversation_id}:${d.user_id}`
+      if (this.typingTimers[key]) clearTimeout(this.typingTimers[key])
+      this.typingTimers[key] = window.setTimeout(() => {
+        this.clearTyping(d.conversation_id, d.user_id)
+      }, 5000)
+    },
+
+    /** 清除某用户在某会话的"正在输入"标记及其定时器 */
+    clearTyping(convId: number, userId: number) {
+      const key = `${convId}:${userId}`
+      if (this.typingTimers[key]) {
+        clearTimeout(this.typingTimers[key])
+        delete this.typingTimers[key]
+      }
+      const bucket = this.typingUsers[convId]
+      if (bucket && bucket[userId]) {
+        const next = { ...bucket }
+        delete next[userId]
+        this.typingUsers[convId] = next
+      }
+    },
+
+    /** 发送 typing 帧（节流由调用方控制）；走普通 send，断线时入离线队列无妨 */
+    sendTyping(convId: number) {
+      this.client?.send('typing', { conversation_id: convId })
+    },
+
+    /**
+     * 重发一条发送失败的本地消息：沿用原 client_msg_id 走 sendWithAck，
+     * 服务端按幂等键去重，不会产生重复消息；再次失败则回到 failed 态。
+     */
+    async resendMessage(msg: LocalMessage) {
+      if (!this.client || msg._status !== 'failed') return
+      msg._status = 'sending'
+      try {
+        await this.client.sendWithAck(
+          'message.send',
+          {
+            conversation_id: msg.conversation_id,
+            client_msg_id: msg.client_msg_id,
+            type: msg.type,
+            content: msg.content,
+          },
+          msg.client_msg_id,
+        )
+      } catch (e) {
+        msg._status = 'failed'
+        console.error('[chat] resend failed', e)
+      }
     },
 
     async sendText(convId: number, text: string) {
