@@ -109,6 +109,12 @@ export const api = {
     return data.data!
   },
 
+  /** 按 ID 查询用户公开资料（用于群聊消息显示发送者昵称） */
+  async getUser(id: number) {
+    const { data } = await http.get<Envelope<User>>(`/users/${id}`)
+    return data.data!
+  },
+
   async listConversations() {
     const { data } = await http.get<Envelope<{ conversations: Conversation[] }>>('/conversations')
     return data.data!.conversations

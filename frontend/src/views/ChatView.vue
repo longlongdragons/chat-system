@@ -20,6 +20,18 @@
         <button @click="startDirect">发起单聊</button>
       </div>
 
+      <div class="new-group">
+        <input v-model.trim="groupNameInput" placeholder="群名称" @keyup.enter="startGroup" />
+        <div class="row2">
+          <input
+            v-model.trim="groupMembersInput"
+            placeholder="成员 ID，逗号分隔，如 1,2"
+            @keyup.enter="startGroup"
+          />
+          <button @click="startGroup">发起群聊</button>
+        </div>
+      </div>
+
       <ul class="conv-list">
         <li
           v-for="c in chat.conversations"
@@ -61,6 +73,10 @@
             :key="m.id || m.client_msg_id"
             :class="['msg', { mine: m.sender_id === auth.user?.id }]"
           >
+            <!-- 群聊中展示他人昵称，否则分不清每条消息是谁发的 -->
+            <div v-if="isGroup && m.sender_id !== auth.user?.id" class="sender">
+              {{ senderName(m.sender_id) }}
+            </div>
             <div class="bubble" :class="{ recalled: m.status === 2 }">
               <template v-if="m.status === 2">
                 <em>消息已撤回</em>
@@ -113,11 +129,11 @@
  * - 发送消息走 store 的乐观更新（先上屏，等网关 ack 关联回写状态）；
  * - 向上滚动到顶部时按序号游标分页拉取更早的历史消息。
  */
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore, type LocalMessage } from '@/stores/chat'
-import { api } from '@/api'
+import { api, type User } from '@/api'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -125,7 +141,15 @@ const router = useRouter()
 
 const draft = ref('')
 const peerIdInput = ref('')
+const groupNameInput = ref('')
+const groupMembersInput = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
+
+/** 当前是否为群聊会话（type 2），决定消息区是否显示发送者昵称 */
+const isGroup = computed(() => chat.activeConversation?.type === 2)
+
+// 群聊发送者昵称缓存：避免每条消息都重复请求同一个用户的资料
+const userCache = ref(new Map<number, User>())
 
 /** 取昵称首字符作为头像占位（无头像图时的文字头像） */
 function initials(name?: string) {
@@ -193,6 +217,40 @@ async function startDirect() {
   }
 }
 
+/** 发起群聊：填群名和逗号分隔的成员 ID（自己作为群主自动入群） */
+async function startGroup() {
+  const name = groupNameInput.value
+  if (!name) return
+  const memberIds = groupMembersInput.value
+    .split(/[,，\s]+/)
+    .map((s) => Number(s))
+    .filter((n) => Number.isInteger(n) && n > 0 && n !== auth.user?.id)
+  try {
+    const conv = await api.createGroup(name, memberIds)
+    groupNameInput.value = ''
+    groupMembersInput.value = ''
+    await chat.loadConversations()
+    await chat.openConversation(conv.id)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+/**
+ * 取群聊消息发送者的昵称用于展示。
+ * 命中缓存直接返回；未命中先返回占位文案并异步拉取资料写入缓存
+ * （写入 ref 包着的 Map 会触发重新渲染，昵称随后自动替换占位符）。
+ */
+function senderName(senderId: number): string {
+  const cached = userCache.value.get(senderId)
+  if (cached) return cached.nickname || cached.username || `用户 ${senderId}`
+  void api
+    .getUser(senderId)
+    .then((u) => userCache.value.set(senderId, u))
+    .catch(() => userCache.value.set(senderId, { id: senderId, nickname: `用户 ${senderId}` } as User))
+  return `用户 ${senderId}`
+}
+
 /** 退出登录：通知后端吊销令牌、拆除 WS 连接与本地聊天状态后回登录页 */
 async function logout() {
   await auth.logout()
@@ -250,6 +308,13 @@ watch(
   border-bottom: 1px solid #e6e8eb;
 }
 .new-chat input { flex: 1; min-width: 0; }
+.new-group {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
+  border-bottom: 1px solid #e6e8eb;
+}
+.new-group .row2 { display: flex; gap: 6px; }
+.new-group .row2 input { flex: 1; min-width: 0; }
+.sender { font-size: 11px; color: #8b949e; margin-bottom: 2px; }
 .conv-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 .conv-list li {
   display: flex; gap: 10px; padding: 10px;
