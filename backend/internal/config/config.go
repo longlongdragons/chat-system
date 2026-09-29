@@ -29,6 +29,10 @@ type Config struct {
 	UploadDir      string   // 附件本地存储目录
 	PublicBaseURL  string   // REST 服务外部地址，用于生成附件下载链接
 
+	WSMsgRateLimit    int // WebSocket 单用户每分钟允许发送的消息条数（滑动窗口限流）
+	WSMaxConns        int // 单网关节点允许的最大并发连接数（护栏，<=0 不限制）
+	WSMaxConnsPerUser int // 单用户允许的最大并发连接数（多端护栏，<=0 不限制）
+
 	AdminUsername string // 管理后台账号，为空则禁用管理员登录
 	AdminPassword string
 }
@@ -53,6 +57,10 @@ func Load() *Config {
 		AllowedOrigins: strings.Split(env("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"), ","),
 		UploadDir:      env("UPLOAD_DIR", "./data/uploads"),
 		PublicBaseURL:  env("PUBLIC_BASE_URL", "http://localhost:8080"),
+
+		WSMsgRateLimit:    envInt("WS_MSG_RATE_LIMIT", 60),
+		WSMaxConns:        envInt("WS_MAX_CONNS", 10000),
+		WSMaxConnsPerUser: envInt("WS_MAX_CONNS_PER_USER", 10),
 
 		AdminUsername: env("ADMIN_USERNAME", ""),
 		AdminPassword: env("ADMIN_PASSWORD", ""),

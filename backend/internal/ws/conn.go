@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"sync"
@@ -90,12 +91,26 @@ func (c *Conn) Close(reason string) {
 	})
 }
 
+// terminateWithFrame 在读写泵启动之前同步写出一帧并直接关闭底层连接。
+// 仅用于连接注册失败（如连接数护栏拒绝）的场景：此刻 sendCh 还没有消费者，
+// 不能走 SendFrame/Close 的异步通道（帧会滞留在缓冲里发不出去），
+// 必须独占底层连接同步写。调用后该 Conn 即作废：未注册进 Hub，无需注销。
+func (c *Conn) terminateWithFrame(t string, data any) {
+	c.closed.Store(true)
+	_ = c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+	_ = c.ws.WriteMessage(websocket.TextMessage, marshalFrame(t, data))
+	_ = c.ws.Close()
+}
+
 // readPump 读循环：在 HTTP 处理器 goroutine 中阻塞运行，逐帧读取并分发。
 // 循环退出（客户端断开/读超时/协议错误）即连接生命周期结束，
-// defer 中注销连接并关闭底层 socket。
+// defer 中注销连接并关闭底层 socket；若这是该用户全平台最后一条连接，
+// 同步广播「下线」presence 事件（查库失败时降级为只推本人，不阻塞回收）。
 func (c *Conn) readPump(h *Handler) {
 	defer func() {
-		c.hub.Unregister(c)
+		if lastOffline := c.hub.Unregister(c); lastOffline {
+			c.hub.BroadcastPresence(context.Background(), c.UserID, false)
+		}
 		_ = c.ws.Close()
 	}()
 

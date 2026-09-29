@@ -3,10 +3,13 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/example/chat/internal/bus"
+	"github.com/example/chat/internal/conversation"
 	"github.com/example/chat/internal/presence"
 	"github.com/google/uuid"
 )
@@ -22,22 +25,47 @@ type Hub struct {
 	serverID string
 	bus      bus.Bus
 	presence *presence.Store
+	convs    *conversation.Repo // 会话仓储：presence 事件扇出前查询共同会话成员
+
+	maxConns        int // 本节点总连接数上限（护栏），<=0 表示不限制
+	maxConnsPerUser int // 单用户连接数上限（多端护栏），<=0 表示不限制
 
 	mu    sync.RWMutex
 	users map[int64]map[string]*Conn // userID -> (connID -> Conn)，支持多端
 	conns map[string]*Conn           // connID -> Conn，本节点全部连接
 }
 
+// ErrTooManyConnections 是连接数护栏触发时 Register 返回的哨兵错误，
+// 由连接处理器映射为 too_many_connections 错误帧告知客户端。
+var ErrTooManyConnections = errors.New("too many connections")
+
+// HubConfig 是 Hub 的可选依赖与运行参数集合，零值即安全可用（各能力降级/不限制）。
+type HubConfig struct {
+	// Convs 会话仓储：presence 上线/离线广播前用它查询「与本人有共同会话的成员」，
+	// 实现精准扇出；为 nil 时退化为只推送给状态变化者本人。
+	Convs *conversation.Repo
+	// MaxConns 是本节点允许同时持有的最大连接数：打到上限说明节点容量已饱和，
+	// 新连接直接拒绝（客户端重连到其他节点），避免内存/文件句柄被缓慢耗尽。
+	// <=0 表示不限制。
+	MaxConns int
+	// MaxConnsPerUser 是单用户允许同时在线的最大连接数：限制异常客户端
+	// 无限重连/多开挤占节点容量。<=0 表示不限制。
+	MaxConnsPerUser int
+}
+
 // NewHub 创建本地连接注册表。serverID 用于区分网关节点（连接 id 前缀及
 // 在线状态归属），bus 用于跨节点广播，pr 用于维护 Redis 在线状态。
-func NewHub(ctx context.Context, serverID string, b bus.Bus, pr *presence.Store) *Hub {
+func NewHub(ctx context.Context, serverID string, b bus.Bus, pr *presence.Store, cfg HubConfig) *Hub {
 	return &Hub{
-		ctx:      ctx,
-		serverID: serverID,
-		bus:      b,
-		presence: pr,
-		users:    make(map[int64]map[string]*Conn),
-		conns:    make(map[string]*Conn),
+		ctx:             ctx,
+		serverID:        serverID,
+		bus:             b,
+		presence:        pr,
+		convs:           cfg.Convs,
+		maxConns:        cfg.MaxConns,
+		maxConnsPerUser: cfg.MaxConnsPerUser,
+		users:           make(map[int64]map[string]*Conn),
+		conns:           make(map[string]*Conn),
 	}
 }
 
@@ -47,10 +75,21 @@ func (h *Hub) ServerID() string { return h.serverID }
 // newConnID 生成全局唯一的连接 id，带节点前缀便于定位连接落在哪个网关实例上。
 func (h *Hub) newConnID() string { return h.serverID + ":" + uuid.NewString() }
 
-// Register 注册连接，返回是否由本实例触发「用户上线」
+// Register 注册连接，返回是否由本实例触发「用户上线」。
+// 注册前先过连接数护栏：节点总连接数或该用户连接数任一达到上限时，
+// 返回 ErrTooManyConnections 拒绝注册（连接不进入注册表，也无需注销）。
 func (h *Hub) Register(c *Conn) (firstOnline bool, err error) {
 	h.mu.Lock()
+	// 护栏校验与注册必须在同一把锁内完成，否则并发注册可能同时越过上限。
+	if h.maxConns > 0 && len(h.conns) >= h.maxConns {
+		h.mu.Unlock()
+		return false, ErrTooManyConnections
+	}
 	m, ok := h.users[c.UserID]
+	if h.maxConnsPerUser > 0 && ok && len(m) >= h.maxConnsPerUser {
+		h.mu.Unlock()
+		return false, ErrTooManyConnections
+	}
 	if !ok {
 		m = make(map[string]*Conn)
 		h.users[c.UserID] = m
@@ -172,18 +211,35 @@ func (h *Hub) StartSubscriber(ctx context.Context) error {
 	})
 }
 
-// BroadcastPresence 广播在线状态变化（上线/下线事件）
+// BroadcastPresence 广播在线状态变化（上线/下线事件）。
+// 扇出目标 = 状态变化者本人（多端同步自己的状态）+ 与其共处至少一个有效会话的
+// 其他成员（单聊对端、群友），这些人才需要感知该用户的在线状态变化。
+// 该函数运行在连接注册/注销的热路径上：查库带 2 秒超时预算，失败（或未注入
+// 会话仓储）时降级为只推本人，绝不因 presence 扇出阻断连接的建立与断开。
 func (h *Hub) BroadcastPresence(ctx context.Context, userID int64, online bool) {
 	status := 0
 	if online {
 		status = 1
 	}
-	// 简化实现：广播给「同一会话的成员」；此处直接广播给所有已知在线用户代价太高，
-	// 实际项目应查询该用户的联系人/会话成员后精准推送。
-	_ = h.BroadcastToUsers(ctx, []int64{userID}, "presence", map[string]any{
+	// 本人始终在目标集合内：既兜底了查库失败的降级场景，也让该用户的
+	// 其他在线端能同步到本端的状态变化。
+	targets := []int64{userID}
+	if h.convs != nil {
+		qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		peers, err := h.convs.PeerIDsOfUser(qctx, userID)
+		cancel()
+		if err != nil {
+			log.Printf("[ws] presence peers lookup failed user=%d, fallback to self: %v", userID, err)
+		} else {
+			targets = append(targets, peers...)
+		}
+	}
+	if err := h.BroadcastToUsers(ctx, targets, "presence", map[string]any{
 		"user_id": userID,
 		"status":  status,
-	})
+	}); err != nil {
+		log.Printf("[ws] presence broadcast failed user=%d online=%v: %v", userID, online, err)
+	}
 }
 
 // Shutdown 优雅停机：向本节点全部连接发送 kick 帧并关闭，让客户端

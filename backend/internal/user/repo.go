@@ -206,8 +206,3 @@ func (r *Repo) ListAdmin(ctx context.Context, keyword string, offset, limit int)
 	}
 	return out, total, rows.Err()
 }
-
-// itoa 仅支持 0-9 的单位数转换（当前未被引用，属预留工具函数）。
-func itoa(i int) string {
-	return string(rune('0' + i))
-}

@@ -23,6 +23,7 @@ import (
 	"github.com/example/chat/internal/message"
 	"github.com/example/chat/internal/moderation"
 	"github.com/example/chat/internal/presence"
+	"github.com/example/chat/internal/ratelimit"
 	"github.com/example/chat/internal/store"
 	"github.com/example/chat/internal/user"
 	"github.com/example/chat/internal/ws"
@@ -64,7 +65,13 @@ func main() {
 
 	// hub 是本网关节点的本地连接注册表；Register/Unregister 会同步维护
 	// Redis 中的在线状态，跨节点投递则经 Redis Pub/Sub 到达。
-	hub := ws.NewHub(ctx, cfg.ServerID, redisBus, presenceStore)
+	// 传入会话仓储，使 presence 上线/离线事件能精准扇出给共同会话成员；
+	// MaxConns/MaxConnsPerUser 是连接数护栏，超限的新连接将被拒绝注册。
+	hub := ws.NewHub(ctx, cfg.ServerID, redisBus, presenceStore, ws.HubConfig{
+		Convs:           convs,
+		MaxConns:        cfg.WSMaxConns,
+		MaxConnsPerUser: cfg.WSMaxConnsPerUser,
+	})
 
 	// 消息服务负责落库、序号分配、敏感词过滤等业务逻辑；
 	// SetBroadcaster 把 hub 注入进去，使 REST/WS 两侧发出的消息都能经网关扇出。
@@ -77,7 +84,10 @@ func main() {
 		log.Fatalf("subscribe broadcast: %v", err)
 	}
 
-	handler := ws.NewHandler(jwtMgr, users, convs, msgSvc, presenceStore, hub, cfg.AllowedOrigins)
+	// 消息发送限流器：按用户做滑动窗口限流（与 HTTP 接口限流共用同一 Redis 实现）
+	msgLimiter := ratelimit.New(rdb)
+	handler := ws.NewHandler(jwtMgr, users, convs, msgSvc, presenceStore, hub, cfg.AllowedOrigins,
+		msgLimiter, cfg.WSMsgRateLimit)
 
 	r := gin.New()
 	r.Use(gin.Recovery())

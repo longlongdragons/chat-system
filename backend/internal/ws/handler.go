@@ -3,6 +3,8 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/example/chat/internal/message"
 	"github.com/example/chat/internal/model"
 	"github.com/example/chat/internal/presence"
+	"github.com/example/chat/internal/ratelimit"
 	"github.com/example/chat/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -30,18 +33,27 @@ type Handler struct {
 	presence *presence.Store
 	hub      *Hub
 
+	// limiter 与 msgRateLimit 用于 message.send 的按用户滑动窗口限流
+	//（每分钟 msgRateLimit 条，与 HTTP 接口限流共用 ratelimit.Limiter 实现）；
+	// limiter 为 nil 时表示不启用限流。
+	limiter      *ratelimit.Limiter
+	msgRateLimit int
+
 	allowedOrigins []string
 	upgrader       websocket.Upgrader
 }
 
 // NewHandler 组装连接处理器；allowedOrigins 用于 WebSocket 握手的
 // Origin 校验，防止浏览器端跨站劫持（CSWSH）。
+// limiter/msgRateLimit 控制单用户发消息频率（条/分钟），limiter 传 nil 则不限流。
 func NewHandler(jwtMgr *auth.Manager, users *user.Repo, conv *conversation.Repo,
-	messages *message.Service, pr *presence.Store, hub *Hub, allowedOrigins []string) *Handler {
+	messages *message.Service, pr *presence.Store, hub *Hub, allowedOrigins []string,
+	limiter *ratelimit.Limiter, msgRateLimit int) *Handler {
 
 	h := &Handler{
 		jwt: jwtMgr, users: users, conv: conv, messages: messages,
 		presence: pr, hub: hub, allowedOrigins: allowedOrigins,
+		limiter: limiter, msgRateLimit: msgRateLimit,
 	}
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -100,7 +112,18 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	conn := newConn(wsConn, h.hub.newConnID(), u.ID, deviceID, h.hub.ServerID(), h.hub)
 	firstOnline, err := h.hub.Register(conn)
 	if err != nil {
-		conn.Close("register_failed")
+		// 注册失败（当前触发点为连接数护栏）：读写泵均未启动，直接同步写
+		// error 帧告知客户端原因再断开，避免客户端误以为连接已建立。
+		if errors.Is(err, ErrTooManyConnections) {
+			log.Printf("[ws] register rejected user=%d: %v", u.ID, err)
+			conn.terminateWithFrame("error", map[string]any{
+				"code": "too_many_connections", "message": "connection limit exceeded", "ref_id": "",
+			})
+			return
+		}
+		conn.terminateWithFrame("error", map[string]any{
+			"code": "register_failed", "message": err.Error(), "ref_id": "",
+		})
 		return
 	}
 	// 记录设备最近活跃信息（平台/UA），失败不影响连接。
@@ -175,9 +198,24 @@ func (h *Handler) Dispatch(c *Conn, f *Frame) {
 	}
 }
 
-// onMessageSend 处理 message.send：调用消息服务完成敏感词过滤、幂等去重、
-// 落库与序号分配、扇出广播，然后回 message.ack 告知客户端发送结果。
+// onMessageSend 处理 message.send：先做按用户限流（超频直接回 error 帧），
+// 再调用消息服务完成敏感词过滤、幂等去重、落库与序号分配、扇出广播，
+// 然后回 message.ack 告知客户端发送结果。
 func (h *Handler) onMessageSend(ctx context.Context, c *Conn, f *Frame) {
+	// 按用户限流（默认 60 条/分钟，WS_MSG_RATE_LIMIT 可配）：限制单个账号的发消息
+	// 频率，防止刷消息打爆会话与存储。降级策略与 HTTP 侧一致——限流器故障
+	// （Redis 抖动/超时）时放行，宁可暂时不限也不误伤正常聊天。
+	if h.limiter != nil && h.msgRateLimit > 0 {
+		key := fmt.Sprintf("rl:ws_msg:u%d", c.UserID)
+		ok, err := h.limiter.Allow(ctx, key, h.msgRateLimit, time.Minute)
+		if err != nil {
+			log.Printf("[ws] msg rate limit check failed user=%d, allow: %v", c.UserID, err)
+		} else if !ok {
+			c.SendError("rate_limited", "too many messages, slow down", f.ID)
+			return
+		}
+	}
+
 	var p sendPayload
 	if err := json.Unmarshal(f.Data, &p); err != nil {
 		c.SendError("bad_payload", "invalid message.send payload", f.ID)

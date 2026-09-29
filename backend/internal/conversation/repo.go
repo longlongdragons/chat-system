@@ -253,28 +253,6 @@ func (r *Repo) ListForUser(ctx context.Context, userID int64) ([]*model.Conversa
 	return views, nil
 }
 
-// AttachPeers 预留接口：原计划为会话列表批量挂载单聊对端用户信息，当前尚未实现
-// （查询结果被丢弃，直接返回 nil）。对端信息目前由 PeerIDs + 上层 load 回调完成。
-func (r *Repo) AttachPeers(ctx context.Context, views []*model.ConversationView,
-	load func(ctx context.Context, ids []int64) (map[int64]*model.User, error)) error {
-	ids := make([]int64, 0)
-	for _, v := range views {
-		if v.Type == model.ConvTypeDirect {
-			ids = append(ids, v.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	// 重查对端
-	rows, err := r.db.Query(ctx, `
-		SELECT conversation_id, CASE WHEN user_a = $1 THEN user_b ELSE user_a END
-		FROM direct_pairs WHERE conversation_id = ANY($2)`, 0, ids)
-	_ = rows
-	_ = err
-	return nil
-}
-
 // PeerIDs 批量求解一批单聊会话中"我"的对端用户 ID，返回 convID -> peerID 映射，
 // 用 CASE WHEN 在一次查询中完成对端取反，避免逐会话查询。
 func (r *Repo) PeerIDs(ctx context.Context, convIDs []int64, self int64) (map[int64]int64, error) {
@@ -297,6 +275,36 @@ func (r *Repo) PeerIDs(ctx context.Context, convIDs []int64, self int64) (map[in
 		out[cid] = pid
 	}
 	return out, rows.Err()
+}
+
+// PeerIDsOfUser 返回与指定用户"共处至少一个有效会话"的其他成员 ID 集合
+// （含单聊对端与全部群友，去重、不含本人）。
+// 主要用于 presence 上线/离线事件的精准扇出：状态变化只推给真正可能
+// 关心该用户在线状态的人，避免全站广播。
+// 性能：cm1 侧走 idx_cm_user(user_id, deleted) 定位本人会话，
+// cm2 侧走 (conversation_id, user_id) 主键回查群友，单用户会话规模下代价可控。
+func (r *Repo) PeerIDsOfUser(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT cm2.user_id
+		FROM conversation_members cm1
+		JOIN conversation_members cm2 ON cm2.conversation_id = cm1.conversation_id
+		WHERE cm1.user_id = $1
+		  AND cm1.deleted = false
+		  AND cm2.deleted = false
+		  AND cm2.user_id <> $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // AddMembers 向群聊批量加人。先按 groups.member_limit 做人数上限校验；

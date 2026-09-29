@@ -31,32 +31,60 @@ func Auth(jwtMgr *auth.Manager, users *user.Repo) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		claims, err := jwtMgr.Verify(raw)
-		if err != nil || claims.Type != auth.TokenTypeAccess {
-			httpx.Unauthorized(c, "invalid_token")
-			c.Abort()
-			return
-		}
-		u, err := users.ByID(c.Request.Context(), claims.UserID)
-		if err != nil {
-			httpx.Unauthorized(c, "user_not_found")
-			c.Abort()
-			return
-		}
-		if u.Status != model.UserStatusNormal {
-			httpx.Forbidden(c, "user_disabled")
-			c.Abort()
-			return
-		}
-		if u.TokenVersion != claims.TokenVer {
-			httpx.Unauthorized(c, "token_revoked")
-			c.Abort()
-			return
-		}
-		c.Set(CtxUserKey, u)
-		c.Set(CtxClaimsKey, claims)
-		c.Next()
+		authenticate(c, jwtMgr, users, raw)
 	}
+}
+
+// AuthWithQueryToken 与 Auth 完成完全相同的验签与业务校验，区别仅在取令牌方式：
+// 优先取 Authorization: Bearer 头，头为空时回落到 ?token= 查询参数。
+// 用于附件下载等被浏览器 <img>/<a> 标签直接引用的接口——这类请求无法携带
+// 自定义 Header，只能把 access token 放在 URL 查询串里。
+// 注意：URL 中的 token 可能进入访问日志/浏览器历史，因此仅对下载类只读接口启用。
+func AuthWithQueryToken(jwtMgr *auth.Manager, users *user.Repo) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw := bearer(c)
+		if raw == "" {
+			raw = strings.TrimSpace(c.Query("token"))
+		}
+		if raw == "" {
+			httpx.Unauthorized(c, "missing_token")
+			c.Abort()
+			return
+		}
+		authenticate(c, jwtMgr, users, raw)
+	}
+}
+
+// authenticate 是 Auth / AuthWithQueryToken 共用的验签核心：
+// 依次校验签名与有效期、令牌类型（必须 access）、用户存在且未封禁、
+// token_version 一致（未被吊销）；全部通过则把用户与声明写入请求上下文。
+// 任一校验失败时写出对应的错误响应并 Abort，不会继续执行后续 handler。
+func authenticate(c *gin.Context, jwtMgr *auth.Manager, users *user.Repo, raw string) {
+	claims, err := jwtMgr.Verify(raw)
+	if err != nil || claims.Type != auth.TokenTypeAccess {
+		httpx.Unauthorized(c, "invalid_token")
+		c.Abort()
+		return
+	}
+	u, err := users.ByID(c.Request.Context(), claims.UserID)
+	if err != nil {
+		httpx.Unauthorized(c, "user_not_found")
+		c.Abort()
+		return
+	}
+	if u.Status != model.UserStatusNormal {
+		httpx.Forbidden(c, "user_disabled")
+		c.Abort()
+		return
+	}
+	if u.TokenVersion != claims.TokenVer {
+		httpx.Unauthorized(c, "token_revoked")
+		c.Abort()
+		return
+	}
+	c.Set(CtxUserKey, u)
+	c.Set(CtxClaimsKey, claims)
+	c.Next()
 }
 
 // RequireRole 要求当前登录用户的角色等级不低于 minRole（如管理后台接口）。
