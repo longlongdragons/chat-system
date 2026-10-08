@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>悬停效果演示 · 精致柔和版</title>
+<style>
+/* ============================================================
+ * 悬停效果演示：精致柔和的导航栏 hover + 自定义提示气泡
+ * 与 chat-system 前端 src/style.css / ChatView.vue 中的实现一致
+ *
+ * 设计要点：
+ * 1. 过渡时长 0.22~0.25s，不生硬闪现
+ * 2. 低饱和主色薄雾底（color-mix 9%）+ 淡阴影 + 轻微放大 1.05
+ * 3. 文字颜色从灰（--text-3）柔过渡到深色（--text-1），不用高饱和亮色
+ * 4. transform 单独用柔和弹性曲线（过冲仅 1.25），鼠标离开时自然回弹，无抖动
+ * ============================================================ */
+
+/* ---- 设计令牌：浅色主题（默认） ---- */
+:root {
+  --color-primary: #5b6cf0;              /* 页面主色（蓝紫），只取 9% 透明度做薄雾底，天然低饱和 */
+  --bg-page: #f2f4f8;
+  --bg-rail: #e7eaf2;
+  --border: #e5e7ec;
+  --text-1: #1c2333;
+  --text-3: #9aa3b2;
+  --shadow-bubble: 0 1px 2px rgba(28, 35, 51, 0.06); /* 淡阴影，不刺眼 */
+  --tooltip-bg: #2b3242;                 /* 柔和深灰蓝（非纯黑） */
+  --tooltip-fg: rgba(255, 255, 255, 0.92);
+  --tooltip-border: rgba(255, 255, 255, 0.08);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft-spring: cubic-bezier(0.34, 1.25, 0.64, 1); /* 柔和回弹：轻微过冲、无抖动 */
+}
+
+/* ---- 深色主题：同套规则，令牌换值即可 ---- */
+[data-theme="dark"] {
+  --color-primary: #7c83f7;
+  --bg-page: #1e1f22;
+  --bg-rail: #1e1f22;
+  --border: #3f4147;
+  --text-1: #f2f3f5;
+  --text-3: #80848e;
+  --shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --tooltip-bg: #eceef2;                 /* 反色浅胶囊，低对比不刺眼 */
+  --tooltip-fg: #3a4150;
+  --tooltip-border: rgba(0, 0, 0, 0.06);
+}
+
+* { box-sizing: border-box; margin: 0; }
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  background: var(--bg-page);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  transition: background-color 0.25s ease;
+}
+
+/* ============ 1. 自定义悬停提示气泡（跟随鼠标，替代原生 title） ============ */
+/* 用法：给任意元素加 data-tip="文案"。注意与 title 二选一，避免双提示。
+ * 单例 .cursor-tip 元素由页面底部的 JS 驱动：mouseover 显隐、mousemove 定位。
+ * left/top 由 JS 直写、不参与过渡，跟随即时；淡入/轻移动画只作用于 opacity/transform。 */
+.cursor-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  translate: 14px 18px;                  /* 固定在光标右下方（独立 translate，不与 transform 冲突） */
+  padding: 6px 11px;
+  border-radius: 8px;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-fg);
+  border: 1px solid var(--tooltip-border);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
+  opacity: 0;
+  pointer-events: none;                  /* 气泡本身不吃鼠标事件，防止干扰 hover */
+  transform: translateY(3px);
+  z-index: 1000;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cursor-tip {
+    transition: opacity 0.22s var(--ease-out), transform 0.22s var(--ease-out);
+  }
+  /* 出现带 0.15s 延迟：快速扫过一排图标时不闪烁；移出无延迟立即消失 */
+  .cursor-tip.show { transition-delay: 0.15s; }
+}
+.cursor-tip.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ============ 2. 导航栏与按钮 ============ */
+.rail {
+  width: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  background: var(--bg-rail);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+
+/* 顶部头像：不是按钮，悬停只给轻微放大的柔和反馈 */
+.rail-me {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--color-primary), #8b5cf6);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.25s var(--ease-soft-spring);
+}
+.rail-me:hover { transform: scale(1.04); }
+
+/* 图标按钮：默认灰色图标、透明底 */
+.rail-btn {
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  color: var(--text-3);
+  cursor: pointer;
+  /* 颜色类属性走 0.22s 缓出；transform 单独走柔和弹性曲线，离开时自然回弹 */
+  transition: background-color 0.22s var(--ease-out), color 0.22s var(--ease-out),
+    box-shadow 0.22s var(--ease-out), filter 0.22s var(--ease-out),
+    transform 0.25s var(--ease-soft-spring);
+}
+/* 悬停（未选中项）：低饱和主色薄雾底 + 文字柔提亮 + 轻微放大 + 淡阴影 */
+.rail-btn:not(.on):hover {
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  color: var(--text-1);
+  transform: scale(1.05);
+  box-shadow: var(--shadow-bubble);
+}
+/* 选中项：主色渐变填充；悬停仅极轻微提亮，不再换底色 */
+.rail-btn.on {
+  background: linear-gradient(135deg, var(--color-primary), #4a5ae0);
+  color: #fff;
+}
+.rail-btn.on:hover { filter: brightness(1.05); }
+/* 按压轻微回缩，松手随弹性曲线回弹 */
+.rail-btn:active { transform: scale(0.97); }
+
+/* 演示用辅助元素 */
+.spacer { flex: 1; }
+.theme-btn {
+  padding: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.22s var(--ease-out), transform 0.25s var(--ease-soft-spring);
+}
+.theme-btn:hover {
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  transform: scale(1.03);
+}
+</style>
+</head>
+<body>
+
+<!-- 迷你导航栏：头像 + 4 个图标按钮 + 底部按钮，与聊天页第 1 栏一致 -->
+<nav class="rail">
+  <div class="rail-me" data-tip="我的账号（已连接）">我</div>
+
+  <button class="rail-btn on" data-tip="消息" aria-label="消息">
+    <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H8l-4.3 3.1a.6.6 0 0 1-1-.5V11.5A8.5 8.5 0 0 1 11.2 3h1.3a8.5 8.5 0 0 1 8.5 8.5Z" />
+    </svg>
+  </button>
+
+  <button class="rail-btn" data-tip="单聊" aria-label="单聊">
+    <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 20.5a7.5 7.5 0 0 1 15 0" />
+    </svg>
+  </button>
+
+  <button class="rail-btn" data-tip="群聊" aria-label="群聊">
+    <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="9" cy="8.5" r="3.4" />
+      <path d="M2.8 19.5a6.2 6.2 0 0 1 12.4 0" />
+      <path d="M15.5 5.6a3.4 3.4 0 1 1 1.6 6.4" />
+      <path d="M17.6 13.7a6.2 6.2 0 0 1 3.6 5.8" />
+    </svg>
+  </button>
+
+  <button class="rail-btn" data-tip="联系人" aria-label="联系人">
+    <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="3" width="16" height="18" rx="2.5" />
+      <circle cx="12" cy="10" r="2.6" />
+      <path d="M7.8 16.6a4.4 4.4 0 0 1 8.4 0" />
+    </svg>
+  </button>
+
+  <div class="spacer"></div>
+
+  <button class="rail-btn" data-tip="退出登录" aria-label="退出登录">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+    </svg>
+  </button>
+</nav>
+
+<!-- 深色/浅色主题切换，验证两套令牌下的效果 -->
+<button class="theme-btn" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? '' : 'dark'">
+  切换深色 / 浅色
+</button>
+
+<script>
+/* data-tip 跟随鼠标的全部逻辑：单例 .cursor-tip 挂在 body 下，
+ * 事件委托在 document 上，动态渲染的元素无需单独绑定。
+ * mouseover 管显隐和文案，mousemove 管跟随定位（只改 left/top，不进过渡）。 */
+let tipEl = null
+function ensureEl() {
+  if (!tipEl) {
+    tipEl = document.createElement('div')
+    tipEl.className = 'cursor-tip'
+    tipEl.setAttribute('role', 'tooltip')
+    document.body.appendChild(tipEl)
+  }
+  return tipEl
+}
+function position(x, y) {
+  if (!tipEl) return
+  // 钳制：气泡最大约 140px 宽、48px 高，贴近右/下边缘时收回来
+  tipEl.style.left = Math.min(x, window.innerWidth - 140) + 'px'
+  tipEl.style.top = Math.min(y, window.innerHeight - 48) + 'px'
+}
+document.addEventListener('mouseover', (e) => {
+  const el = e.target?.closest?.('[data-tip]')
+  const text = el?.getAttribute('data-tip')?.trim()
+  const tip = ensureEl()
+  if (el && text) {
+    tip.textContent = text
+    position(e.clientX, e.clientY) // 立即就位，避免从旧位置跳过来
+    tip.classList.add('show')
+  } else {
+    tip.classList.remove('show')
+  }
+}, { passive: true })
+document.addEventListener('mousemove', (e) => {
+  if (!tipEl || !tipEl.classList.contains('show')) return
+  position(e.clientX, e.clientY)
+}, { passive: true })
+document.addEventListener('mouseout', (e) => {
+  if (!e.relatedTarget && tipEl) tipEl.classList.remove('show')
+}, { passive: true })
+</script>
+
+</body>
+</html>

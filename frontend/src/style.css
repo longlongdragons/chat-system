@@ -83,6 +83,11 @@
   /* ---- 聚焦发光（叠加在主色光环之外的第二层光晕，浅色下很弱） ---- */
   --focus-glow: 0 0 14px rgba(91, 108, 240, 0.10);
 
+  /* ---- 悬停提示气泡（[data-tip] 自定义 tooltip，低饱和柔和配色） ---- */
+  --tooltip-bg: #2b3242;                  /* 柔和深灰蓝，非纯黑 */
+  --tooltip-fg: rgba(255, 255, 255, 0.92);
+  --tooltip-border: rgba(255, 255, 255, 0.08);
+
   /* ---- 间距刻度（4px 基网） ---- */
   --space-1: 4px;
   --space-2: 8px;
@@ -179,6 +184,11 @@
 
   /* ---- 聚焦霓虹光晕 ---- */
   --focus-glow: 0 0 18px rgba(124, 131, 247, 0.40);
+
+  /* ---- 悬停提示气泡：深色下用反色浅胶囊，低对比不刺眼 ---- */
+  --tooltip-bg: #eceef2;
+  --tooltip-fg: #3a4150;
+  --tooltip-border: rgba(0, 0, 0, 0.06);
 }
 
 /* ---- 基础重置 ---- */
@@ -242,6 +252,42 @@ input:focus, textarea:focus {
 
 a { color: var(--color-primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* ---- 悬停提示气泡：给元素加 data-tip="文案" 即获得跟随鼠标的自定义 tooltip，
+ * 替代浏览器原生 title（出现慢、样式不可定制）。注意与 title 二选一，避免双提示。
+ * 单例 .cursor-tip 元素由 utils/tooltip.ts 驱动：mouseover 显隐、mousemove 定位。
+ * left/top 由 JS 直写、不参与过渡，跟随即时；淡入与轻移动画只作用于 opacity/transform。 ---- */
+.cursor-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  translate: 14px 18px;                  /* 固定在光标右下方（独立 translate，不与 transform 冲突） */
+  padding: 6px 11px;
+  border-radius: 8px;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-fg);
+  border: 1px solid var(--tooltip-border);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10); /* 淡阴影，不刺眼 */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  z-index: 1000; /* 单例挂在 body 下，需盖过所有分栏层级 */
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cursor-tip {
+    transition: opacity 0.22s var(--ease-out), transform 0.22s var(--ease-out);
+  }
+  /* 出现带 0.15s 短暂延迟，扫过一排图标时不闪烁；移出无延迟立即消失 */
+  .cursor-tip.show { transition-delay: 0.15s; }
+}
+.cursor-tip.show {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 /* ---- 自定义滚动条：细轨、圆头滑块，hover 加深 ---- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

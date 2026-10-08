@@ -2,7 +2,7 @@
   <!-- 主题切换按钮：太阳 / 月亮图标旋转交替 -->
   <button
     class="theme-toggle"
-    :title="theme.mode === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+    :data-tip="theme.mode === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
     :aria-label="theme.mode === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
     @click="theme.toggle()"
   >

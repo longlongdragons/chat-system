@@ -6,21 +6,25 @@
     <!-- ===== 第 1 栏：图标导航栏（Discord 风格深色窄栏） ===== -->
     <nav class="rail">
       <!-- 我的头像：右下角叠连接状态点（绿=已连接 / 黄=重连中） -->
-      <div class="rail-me" :title="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`">
+      <div
+        class="rail-me"
+        :data-tip="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`"
+        :aria-label="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`"
+      >
         <div class="avatar me-avatar">{{ initials(auth.user?.nickname) }}</div>
         <i :class="['status-dot', { on: chat.connected }]"></i>
       </div>
 
       <!-- 分类导航：消息 / 单聊 / 群聊 / 联系人 -->
       <div class="rail-nav">
-        <button :class="['rail-btn', { on: category === 'all' }]" title="消息" @click="selectCategory('all')">
+        <button :class="['rail-btn', { on: category === 'all' }]" data-tip="消息" aria-label="消息" @click="selectCategory('all')">
           <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H8l-4.3 3.1a.6.6 0 0 1-1-.5V11.5A8.5 8.5 0 0 1 11.2 3h1.3a8.5 8.5 0 0 1 8.5 8.5Z" />
           </svg>
           <span v-if="unreadTotal > 0" class="rail-badge">{{ unreadTotal > 99 ? '99+' : unreadTotal }}</span>
         </button>
 
-        <button :class="['rail-btn', { on: category === 'direct' }]" title="单聊" @click="selectCategory('direct')">
+        <button :class="['rail-btn', { on: category === 'direct' }]" data-tip="单聊" aria-label="单聊" @click="selectCategory('direct')">
           <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="8" r="4" />
             <path d="M4.5 20.5a7.5 7.5 0 0 1 15 0" />
@@ -28,7 +32,7 @@
           <span v-if="unreadDirect > 0" class="rail-badge">{{ unreadDirect > 99 ? '99+' : unreadDirect }}</span>
         </button>
 
-        <button :class="['rail-btn', { on: category === 'group' }]" title="群聊" @click="selectCategory('group')">
+        <button :class="['rail-btn', { on: category === 'group' }]" data-tip="群聊" aria-label="群聊" @click="selectCategory('group')">
           <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="9" cy="8.5" r="3.4" />
             <path d="M2.8 19.5a6.2 6.2 0 0 1 12.4 0" />
@@ -38,7 +42,7 @@
           <span v-if="unreadGroup > 0" class="rail-badge">{{ unreadGroup > 99 ? '99+' : unreadGroup }}</span>
         </button>
 
-        <button :class="['rail-btn', { on: category === 'contacts' }]" title="联系人" @click="selectCategory('contacts')">
+        <button :class="['rail-btn', { on: category === 'contacts' }]" data-tip="联系人" aria-label="联系人" @click="selectCategory('contacts')">
           <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <rect x="4" y="3" width="16" height="18" rx="2.5" />
             <circle cx="12" cy="10" r="2.6" />
@@ -50,7 +54,7 @@
       <!-- 底部：主题切换 + 退出 -->
       <div class="rail-bottom">
         <ThemeToggle />
-        <button class="rail-btn" title="退出登录" @click="logout">
+        <button class="rail-btn" data-tip="退出登录" aria-label="退出登录" @click="logout">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3" />
             <path d="m16 17 5-5-5-5" />
@@ -712,8 +716,13 @@ watch(
   transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 
-/* 顶部我的头像 + 连接状态点 */
-.rail-me { position: relative; margin-bottom: var(--space-1); }
+/* 顶部我的头像 + 连接状态点；悬停轻微放大（头像不是按钮，仅给柔和反馈） */
+.rail-me {
+  position: relative;
+  margin-bottom: var(--space-1);
+  transition: transform 0.25s cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+.rail-me:hover { transform: scale(1.04); }
 .status-dot {
   position: absolute;
   right: -2px; bottom: -2px;
@@ -741,9 +750,20 @@ watch(
   border-radius: var(--radius-md);
   color: var(--text-3);
   padding: 0;
-  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  /* 颜色类属性走 0.22s 缓出；transform 单独用柔和弹性曲线（轻微过冲回弹，无抖动） */
+  transition: background-color 0.22s var(--ease-out), color 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out), filter 0.22s var(--ease-out), transform 0.25s cubic-bezier(0.34, 1.25, 0.64, 1);
 }
-.rail-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
+/* 悬停（未选中项）：低饱和主色薄雾底 + 文字柔提亮 + 轻微放大与淡影，柔和不刺眼 */
+.rail-btn:not(.on):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  color: var(--text-1);
+  transform: scale(1.05);
+  box-shadow: var(--shadow-bubble);
+}
+/* 已选中项悬停仅极轻微提亮，保留渐变选中态 */
+.rail-btn.on:hover { filter: brightness(1.05); }
+/* 按压轻微回缩，松手随弹性曲线回弹 */
+.rail-btn:active:not(:disabled) { transform: scale(0.97); }
 .rail-btn.on {
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
   color: var(--color-on-primary);
@@ -781,8 +801,14 @@ watch(
   background: transparent;
   border-radius: var(--radius-md);
   color: var(--text-3);
+  /* 与 rail-btn 同一套柔和节奏：颜色 0.22s 缓出，缩放 0.25s 轻微回弹 */
+  transition: background-color 0.22s var(--ease-out), color 0.22s var(--ease-out), transform 0.25s cubic-bezier(0.34, 1.25, 0.64, 1);
 }
-.rail-bottom :deep(.theme-toggle:hover:not(:disabled)) { background: var(--bg-hover); color: var(--text-1); }
+.rail-bottom :deep(.theme-toggle:hover:not(:disabled)) {
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  color: var(--text-1);
+  transform: scale(1.05);
+}
 
 /* ===== 第 2 栏：分类列表栏（玻璃拟态） ===== */
 .panel {
