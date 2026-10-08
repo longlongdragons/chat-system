@@ -32,6 +32,7 @@ type Config struct {
 	WSMsgRateLimit    int // WebSocket 单用户每分钟允许发送的消息条数（滑动窗口限流）
 	WSMaxConns        int // 单网关节点允许的最大并发连接数（护栏，<=0 不限制）
 	WSMaxConnsPerUser int // 单用户允许的最大并发连接数（多端护栏，<=0 不限制）
+	WSHubBuckets      int // Hub 连接注册表的分桶数量（<=0 用默认值 32）
 
 	AdminUsername string // 管理后台账号，为空则禁用管理员登录
 	AdminPassword string
@@ -61,6 +62,7 @@ func Load() *Config {
 		WSMsgRateLimit:    envInt("WS_MSG_RATE_LIMIT", 60),
 		WSMaxConns:        envInt("WS_MAX_CONNS", 10000),
 		WSMaxConnsPerUser: envInt("WS_MAX_CONNS_PER_USER", 10),
+		WSHubBuckets:      envInt("WS_HUB_BUCKETS", 32),
 
 		AdminUsername: env("ADMIN_USERNAME", ""),
 		AdminPassword: env("ADMIN_PASSWORD", ""),

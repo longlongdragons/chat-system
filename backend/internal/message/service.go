@@ -78,8 +78,9 @@ type SendResult struct {
 
 // Send 处理一条消息的发送全链路：
 // 成员/禁言校验 → 敏感词过滤 → 幂等预检 → 分配会话内序号 → 落库 →
-// 更新会话最后消息与未读数 → 扇出（在线广播 + 离线落表）。
+// 更新会话最后消息与未读数 → 异步扇出（在线广播 + 离线落表）。
 // 幂等性由 (conversation_id, client_msg_id) 唯一约束兜底，客户端重试不会产生重复消息。
+// ack 的语义是「已持久化」：返回时消息已落库并完成会话更新，投递由异步扇出完成。
 func (s *Service) Send(ctx context.Context, in SendInput) (*SendResult, error) {
 	if len(in.Content) == 0 {
 		return nil, ErrEmpty
@@ -156,15 +157,40 @@ func (s *Service) Send(ctx context.Context, in SendInput) (*SendResult, error) {
 		log.Printf("[message] bump unread failed: %v", err)
 	}
 
-	// 7. 广播 + 离线落表
-	s.fanout(ctx, &msg)
+	// 7. 广播 + 离线落表：异步执行，不阻塞 ack。
+	// 借鉴 OpenIM msgtransfer 的思路（落库与投递分离为两个环节）：ack 只反映
+	// 持久化耗时，扇出涉及的 Redis/DB 往返不再拖慢发送方确认。
+	go s.fanoutAsync(&msg)
 
 	return &SendResult{MessageID: msg.ID, Seq: msg.Seq, CreatedAt: msg.CreatedAt}, nil
+}
+
+// fanoutAsync 在独立 goroutine 中执行消息扇出，与发送方 ack 路径解耦：
+//   - context 从 context.Background() 派生并带 10s 超时：WS 帧处理的请求 ctx
+//     在 Send 返回后即被取消，异步扇出必须与之脱钩，否则投递会被中途掐断；
+//   - recover 兜底：扇出 panic 只记日志，绝不影响发送主流程所在 goroutine。
+//
+// 代价说明：同一会话的并发消息由不同 goroutine 扇出，publish 顺序可能与 seq
+// 顺序出现轻微乱序；消息帧自带 seq，客户端按 seq 排序兜底（前端已是这样做的），
+// 断线补拉与 sync.pull 也按 seq 增量对齐，因此不影响最终一致性。
+func (s *Service) fanoutAsync(msg *model.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[message] fanout panic msg=%d: %v", msg.ID, r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.fanout(ctx, msg)
 }
 
 // fanout 消息扇出：向会话全体成员广播新消息，并给离线成员写入 offline_messages 表，
 // 供其上线后通过 PullOffline 补拉。发送者本人不落离线表。
 // 广播与离线写库并行不悖：在线用户实时收到帧，离线/丢帧用户靠离线表兜底。
+//
+// 性能：在线判断与离线落表都走批量接口——AreOnline 用 Redis Pipeline 一次 RTT
+// 判定全部成员，InsertOfflineBatch 单条 SQL 一次落全部离线记录；不再随群人数
+// 线性放大往返次数。任一批量步骤失败时回退到逐用户处理，可靠性不低于逐查实现。
 func (s *Service) fanout(ctx context.Context, msg *model.Message) {
 	memberIDs, err := s.conv.MemberIDs(ctx, msg.ConversationID)
 	if err != nil {
@@ -175,24 +201,38 @@ func (s *Service) fanout(ctx context.Context, msg *model.Message) {
 		return
 	}
 
-	// 离线用户落 offline_messages
-	offline := make([]int64, 0, len(memberIDs))
+	// 发送者本人不落离线表，先从候选中剔除
+	candidates := make([]int64, 0, len(memberIDs))
 	for _, uid := range memberIDs {
-		if uid == msg.SenderID {
-			continue
-		}
-		online, err := s.presence.IsOnline(ctx, uid)
-		if err != nil {
-			log.Printf("[message] presence check failed uid=%d: %v", uid, err)
-			continue
-		}
-		if !online {
-			offline = append(offline, uid)
+		if uid != msg.SenderID {
+			candidates = append(candidates, uid)
 		}
 	}
-	for _, uid := range offline {
-		if err := s.conv.InsertOffline(ctx, uid, msg.ConversationID, msg.ID, msg.Seq); err != nil {
-			log.Printf("[message] insert offline failed uid=%d: %v", uid, err)
+
+	// 一次 Pipeline 批量判定在线状态；失败时整体降级为逐用户查询
+	var offline []int64
+	onlineMap, err := s.presence.AreOnline(ctx, candidates)
+	if err != nil {
+		log.Printf("[message] batch presence check failed, fallback to per-user: %v", err)
+		offline = s.collectOfflineSerial(ctx, candidates)
+	} else {
+		offline = make([]int64, 0, len(candidates))
+		for _, uid := range candidates {
+			if !onlineMap[uid] {
+				offline = append(offline, uid)
+			}
+		}
+	}
+
+	// 单条 SQL 批量落离线表；失败时降级为逐用户插入（同样幂等）
+	if len(offline) > 0 {
+		if err := s.conv.InsertOfflineBatch(ctx, offline, msg.ConversationID, msg.ID, msg.Seq); err != nil {
+			log.Printf("[message] batch insert offline failed, fallback to per-user: %v", err)
+			for _, uid := range offline {
+				if err := s.conv.InsertOffline(ctx, uid, msg.ConversationID, msg.ID, msg.Seq); err != nil {
+					log.Printf("[message] insert offline failed uid=%d: %v", uid, err)
+				}
+			}
 		}
 	}
 
@@ -202,6 +242,23 @@ func (s *Service) fanout(ctx context.Context, msg *model.Message) {
 	if err := s.bc.BroadcastToUsers(ctx, memberIDs, "message.new", msg); err != nil {
 		log.Printf("[message] broadcast failed: %v", err)
 	}
+}
+
+// collectOfflineSerial 逐个查询在线状态并收集离线成员，是 AreOnline 批量接口
+// 失败时的降级路径：单个成员查询失败只跳过该成员（记日志），不影响其他人。
+func (s *Service) collectOfflineSerial(ctx context.Context, candidates []int64) []int64 {
+	offline := make([]int64, 0, len(candidates))
+	for _, uid := range candidates {
+		online, err := s.presence.IsOnline(ctx, uid)
+		if err != nil {
+			log.Printf("[message] presence check failed uid=%d: %v", uid, err)
+			continue
+		}
+		if !online {
+			offline = append(offline, uid)
+		}
+	}
+	return offline
 }
 
 // nextSeq 分配会话内单调递增的消息序号。优先用 Redis INCR（高性能），

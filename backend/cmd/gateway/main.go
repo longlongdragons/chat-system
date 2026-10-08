@@ -71,6 +71,7 @@ func main() {
 		Convs:           convs,
 		MaxConns:        cfg.WSMaxConns,
 		MaxConnsPerUser: cfg.WSMaxConnsPerUser,
+		Buckets:         cfg.WSHubBuckets,
 	})
 
 	// 消息服务负责落库、序号分配、敏感词过滤等业务逻辑；

@@ -78,6 +78,40 @@ func (s *Store) IsOnline(ctx context.Context, userID int64) (bool, error) {
 	return n > 0, err
 }
 
+// AreOnline 批量判断一组用户是否在线，返回 userID -> 是否在线的映射，
+// 判定逻辑与 IsOnline 一致（该用户在各网关节点上的连接计数之和 > 0）。
+// 实现上用 go-redis Pipeline 把 N 个 HVALS 打包到一次 RTT 中下发并收回全部结果，
+// 取代消息扇出场景下的 N 次串行往返（100 人群即节省约 99 次 RTT）。
+// 说明：Pipeline 只是命令打包，不是 MULTI 事务——各命令独立原子执行、互不依赖；
+// 在线判断是纯读场景，无需事务语义，任一命令失败时 Exec 返回错误，
+// 由调用方整体降级到逐个查询（可靠性不低于逐查实现）。
+func (s *Store) AreOnline(ctx context.Context, userIDs []int64) (map[int64]bool, error) {
+	out := make(map[int64]bool, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	pipe := s.rdb.Pipeline()
+	cmds := make([]*redis.StringSliceCmd, len(userIDs))
+	for i, uid := range userIDs {
+		cmds[i] = pipe.HVals(ctx, key(uid))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	for i, uid := range userIDs {
+		var total int64
+		for _, v := range cmds[i].Val() {
+			var n int64
+			fmt.Sscanf(v, "%d", &n)
+			if n > 0 {
+				total += n
+			}
+		}
+		out[uid] = total > 0
+	}
+	return out, nil
+}
+
 // Heartbeat 刷新在线状态键的 TTL，由网关按心跳周期调用，为活跃连接续期。
 func (s *Store) Heartbeat(ctx context.Context, userID int64) {
 	s.rdb.Expire(ctx, key(userID), presenceTTL)

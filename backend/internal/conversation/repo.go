@@ -411,6 +411,21 @@ func (r *Repo) InsertOffline(ctx context.Context, userID, convID, msgID, seq int
 	return err
 }
 
+// InsertOfflineBatch 批量为多个离线用户登记同一条待投递消息：
+// 单条 INSERT ... SELECT unnest 一次往返完成全部插入，取代逐用户 N 次 DB RTT
+// （100 人离线群即节省约 99 次往返）。ON CONFLICT DO NOTHING 的幂等语义与
+// InsertOffline 完全一致，重复扇出不会产生重复记录。
+func (r *Repo) InsertOfflineBatch(ctx context.Context, userIDs []int64, convID, msgID, seq int64) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO offline_messages (user_id, conversation_id, message_id, seq)
+		SELECT uid, $2, $3, $4 FROM unnest($1::bigint[]) AS uid
+		ON CONFLICT DO NOTHING`, userIDs, convID, msgID, seq)
+	return err
+}
+
 // PullOffline 按登记时间正序拉取用户离线期间积压的消息（联查消息正文），
 // 用户上线补拉后由 MarkRead 清理对应记录。
 func (r *Repo) PullOffline(ctx context.Context, userID int64, limit int) ([]*model.Message, error) {
