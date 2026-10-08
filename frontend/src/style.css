@@ -1,9 +1,11 @@
 /* ============================================================
  * 全局样式与设计令牌（Design Tokens）
  *
- * 所有视觉决策（颜色 / 圆角 / 阴影 / 间距 / 字号）都收敛为 :root 下的
- * CSS 变量，组件内一律引用变量，保证全局观感一致、后续换肤只改一处。
- * 当前为浅色主题。
+ * 所有视觉决策（颜色 / 圆角 / 阴影 / 间距 / 字号）都收敛为 CSS 变量，
+ * 组件内一律引用变量。双主题通过 <html data-theme="light|dark"> 切换：
+ * - :root                 —— 浅色主题（默认，精致清爽）
+ * - [data-theme="dark"]   —— 深色主题（Discord 风格分层 + 霓虹焦点态）
+ * 主题状态管理见 src/stores/theme.ts。
  * ============================================================ */
 
 :root {
@@ -13,6 +15,9 @@
   --color-primary-active: #3f4dd4;
   --color-primary-soft: #eef0fe;     /* 主色极浅底：选中背景、聚焦光环 */
   --color-primary-ring: rgba(91, 108, 240, 0.18); /* 输入框聚焦光环 */
+  --color-primary-grad-end: #8b5cf6; /* 主色渐变终点（logo、自己的头像） */
+  --color-primary-border: rgba(91, 108, 240, 0.40); /* 主色描边（ghost 按钮） */
+  --color-on-primary: #ffffff;       /* 主色填充上的文字色 */
 
   /* ---- 状态色 ---- */
   --color-success: #22a06b;
@@ -21,10 +26,11 @@
   --color-warning-soft: #fdf3e2;
   --color-danger: #e5484d;
   --color-danger-soft: #fdecec;
+  --color-danger-border: rgba(229, 72, 77, 0.25);
 
   /* ---- 中性色阶 ---- */
-  --bg-page: #f2f4f8;                /* 页面底色（登录页、主区） */
-  --bg-sidebar: #f7f8fa;             /* 侧栏底色，与主区分层 */
+  --bg-page: #f2f4f8;                /* 页面底色（登录页、聊天布局底层） */
+  --bg-sidebar: #f7f8fa;             /* 侧栏底色（实心，用于不透底的场景） */
   --bg-card: #ffffff;                /* 卡片 / 气泡底 */
   --bg-hover: #eef0f4;               /* 列表项 hover */
   --border: #e5e7ec;                 /* 常规边框/分割线 */
@@ -32,6 +38,17 @@
   --text-1: #1c2333;                 /* 一级文字：标题、正文 */
   --text-2: #5a6478;                 /* 二级文字：辅助说明 */
   --text-3: #9aa3b2;                 /* 三级文字：时间戳、占位符 */
+
+  /* ---- 玻璃拟态底色（半透明 + backdrop-filter 的场景） ---- */
+  --bg-glass: rgba(247, 248, 250, 0.72);        /* 侧栏 */
+  --bg-glass-strong: rgba(255, 255, 255, 0.78); /* 顶栏 / 输入区 */
+  --bg-glass-card: rgba(255, 255, 255, 0.75);   /* 登录卡片 */
+  /* 消息区底：半透明渐变，让底层光斑隐约透出 */
+  --bg-messages: linear-gradient(180deg, rgba(255, 255, 255, 0.50) 0%, rgba(244, 246, 250, 0.50) 100%);
+
+  /* ---- 分段控件（登录/注册切换） ---- */
+  --bg-track: #eef0f4;       /* 轨道底 */
+  --bg-segment-on: #ffffff;  /* 选中项浮块 */
 
   /* ---- 圆角 ---- */
   --radius-sm: 6px;
@@ -44,6 +61,24 @@
   --shadow-header: 0 1px 3px rgba(28, 35, 51, 0.06);
   --shadow-bubble: 0 1px 2px rgba(28, 35, 51, 0.06);
   --shadow-pop: 0 4px 16px rgba(28, 35, 51, 0.12);
+  --shadow-primary: 0 2px 8px rgba(91, 108, 240, 0.28);    /* 主色按钮/自己的气泡投影 */
+  --shadow-primary-lg: 0 4px 12px rgba(91, 108, 240, 0.30);
+
+  /* ---- 未读角标 ---- */
+  --badge-bg: linear-gradient(135deg, #f2555a, var(--color-danger));
+  --shadow-badge: 0 1px 3px rgba(229, 72, 77, 0.40);
+
+  /* ---- 滚动条 ---- */
+  --scrollbar-thumb: rgba(28, 35, 51, 0.16);
+  --scrollbar-thumb-hover: rgba(28, 35, 51, 0.28);
+
+  /* ---- 环境光斑（背景装饰层 .bg-fx 内的漂浮渐变球配色） ---- */
+  --glow-1: rgba(91, 108, 240, 0.14);
+  --glow-2: rgba(139, 92, 246, 0.11);
+  --glow-3: rgba(14, 165, 233, 0.10);
+
+  /* ---- 聚焦发光（叠加在主色光环之外的第二层光晕，浅色下很弱） ---- */
+  --focus-glow: 0 0 14px rgba(91, 108, 240, 0.10);
 
   /* ---- 间距刻度（4px 基网） ---- */
   --space-1: 4px;
@@ -65,8 +100,79 @@
 
   /* ---- 动效 ---- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* 弹性曲线：消息弹入等 */
   --dur-fast: 0.15s;
   --dur-base: 0.22s;
+}
+
+/* ============================================================
+ * 深色主题：参考 Discord 调色（#1e1f22 / #2b2d31 / #313338 分层），
+ * 主色提亮并加强光环，呈现霓虹焦点态；光斑更饱和，透出科技感。
+ * ============================================================ */
+[data-theme="dark"] {
+  /* ---- 主色（提亮版蓝紫，暗底上保持对比度） ---- */
+  --color-primary: #7c83f7;
+  --color-primary-hover: #8f95f9;
+  --color-primary-active: #6a71f0;
+  --color-primary-soft: rgba(124, 131, 247, 0.16);
+  --color-primary-ring: rgba(124, 131, 247, 0.35);
+  --color-primary-grad-end: #a78bfa;
+  --color-primary-border: rgba(124, 131, 247, 0.50);
+  --color-on-primary: #ffffff;
+
+  /* ---- 状态色（暗底提亮） ---- */
+  --color-success: #2dc770;
+  --color-success-soft: rgba(45, 199, 112, 0.14);
+  --color-warning: #f0b232;
+  --color-warning-soft: rgba(240, 178, 50, 0.14);
+  --color-danger: #f2555a;
+  --color-danger-soft: rgba(242, 85, 90, 0.16);
+  --color-danger-border: rgba(242, 85, 90, 0.35);
+
+  /* ---- 中性色阶（Discord 式分层） ---- */
+  --bg-page: #1e1f22;
+  --bg-sidebar: #2b2d31;
+  --bg-card: #313338;
+  --bg-hover: #3a3c42;
+  --border: #3f4147;
+  --border-strong: #4a4d55;
+  --text-1: #f2f3f5;
+  --text-2: #b5bac1;
+  --text-3: #80848e;
+
+  /* ---- 玻璃拟态底色 ---- */
+  --bg-glass: rgba(43, 45, 49, 0.72);
+  --bg-glass-strong: rgba(49, 51, 56, 0.78);
+  --bg-glass-card: rgba(43, 45, 49, 0.72);
+  --bg-messages: linear-gradient(180deg, rgba(49, 51, 56, 0.45) 0%, rgba(30, 31, 34, 0.45) 100%);
+
+  /* ---- 分段控件：深色下轨道更暗、选中项更亮（与浅色相反） ---- */
+  --bg-track: #26272c;
+  --bg-segment-on: #43454c;
+
+  /* ---- 阴影（暗主题用深黑投影塑形） ---- */
+  --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --shadow-header: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-primary: 0 2px 10px rgba(108, 114, 245, 0.40);
+  --shadow-primary-lg: 0 4px 14px rgba(108, 114, 245, 0.45);
+
+  /* ---- 未读角标 ---- */
+  --badge-bg: linear-gradient(135deg, #f7666b, #f23f43);
+  --shadow-badge: 0 1px 3px rgba(242, 63, 67, 0.50);
+
+  /* ---- 滚动条 ---- */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
+
+  /* ---- 环境光斑：深色下更霓虹 ---- */
+  --glow-1: rgba(88, 101, 242, 0.38);
+  --glow-2: rgba(168, 85, 247, 0.30);
+  --glow-3: rgba(34, 211, 238, 0.22);
+
+  /* ---- 聚焦霓虹光晕 ---- */
+  --focus-glow: 0 0 18px rgba(124, 131, 247, 0.40);
 }
 
 /* ---- 基础重置 ---- */
@@ -80,9 +186,11 @@ body {
   color: var(--text-1);
   background: var(--bg-page);
   -webkit-font-smoothing: antialiased; /* 让中文字体在浅色底上更干净 */
+  /* 主题切换时底色与文字平滑过渡 */
+  transition: background-color var(--dur-base) ease, color var(--dur-base) ease;
 }
 
-/* ---- 按钮基础样式：hover 微抬起、active 回压、禁用态降透明 ---- */
+/* ---- 按钮基础样式：hover 微抬起、按下缩放、禁用态降透明 ---- */
 button {
   cursor: pointer;
   font: inherit;
@@ -98,15 +206,15 @@ button {
     transform var(--dur-fast) var(--ease-out);
 }
 button:hover:not(:disabled) { background: var(--bg-hover); }
-button:active:not(:disabled) { transform: translateY(1px); }
+button:active:not(:disabled) { transform: scale(0.96); } /* 按下回弹反馈 */
 button:focus-visible {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-ring);
+  box-shadow: 0 0 0 3px var(--color-primary-ring), var(--focus-glow);
 }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* ---- 输入框基础样式：聚焦时主色描边 + 柔和光环 ---- */
+/* ---- 输入框基础样式：聚焦时主色描边 + 光环 + 主题化光晕 ---- */
 input, textarea {
   font: inherit;
   font-size: var(--text-sm);
@@ -117,12 +225,13 @@ input, textarea {
   padding: 8px 12px;
   outline: none;
   transition: border-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
+    box-shadow var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
 }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
 input:focus, textarea:focus {
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-ring);
+  box-shadow: 0 0 0 3px var(--color-primary-ring), var(--focus-glow);
 }
 
 a { color: var(--color-primary); text-decoration: none; }
@@ -132,12 +241,56 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(28, 35, 51, 0.16);
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-full);
   background-clip: padding-box;
   border: 2px solid transparent; /* 用透明边距让滑块视觉更细 */
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(28, 35, 51, 0.28); background-clip: padding-box; border: 2px solid transparent; }
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
 
 /* Firefox 滚动条 */
-* { scrollbar-width: thin; scrollbar-color: rgba(28, 35, 51, 0.2) transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+
+/* ============================================================
+ * 环境光斑背景层：在容器内放 <div class="bg-fx"><i class="blob b1"/>…</div>
+ * 三个大模糊渐变球缓慢漂移，为界面提供氛围底色（浅色淡雅 / 深色霓虹）。
+ * 性能约束：动画只改 transform/opacity，blur 为静态滤镜由 GPU 缓存。
+ * ============================================================ */
+.bg-fx {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  will-change: transform, opacity;
+}
+.blob.b1 { width: 480px; height: 480px; background: var(--glow-1); top: -140px; right: -60px; }
+.blob.b2 { width: 420px; height: 420px; background: var(--glow-2); bottom: -150px; left: 22%; }
+.blob.b3 { width: 340px; height: 340px; background: var(--glow-3); top: 32%; left: -110px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .blob.b1 { animation: drift-1 38s ease-in-out infinite alternate; }
+  .blob.b2 { animation: drift-2 46s ease-in-out infinite alternate; }
+  .blob.b3 { animation: drift-3 32s ease-in-out infinite alternate; }
+}
+@keyframes drift-1 {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(-110px, 80px) scale(1.18); }
+}
+@keyframes drift-2 {
+  from { transform: translate(0, 0) scale(1.1); opacity: 0.85; }
+  to { transform: translate(120px, -70px) scale(0.94); opacity: 1; }
+}
+@keyframes drift-3 {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(90px, 100px) scale(1.22); }
+}

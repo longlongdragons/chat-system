@@ -16,12 +16,16 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { setTokenListeners } from '@/api/http'
 import { useChatStore } from '@/stores/chat'
+import { useThemeStore } from '@/stores/theme'
 
 const auth = useAuthStore()
 const chat = useChatStore()
+const theme = useThemeStore()
 const router = useRouter()
 
 onMounted(async () => {
+  // 应用主题到 <html data-theme>（index.html 的引导脚本已写过一次，这里兜底并挂系统主题监听）
+  theme.init()
   // 刷新成功 → 只更新内存令牌并写回 localStorage；
   // 刷新失败 → 本地登出、拆除聊天连接（WS/订阅），回到登录页
   setTokenListeners(

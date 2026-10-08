@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>实时交流系统</title>
+    <script>
+      // 主题引导：在应用脚本加载前写入 <html data-theme>，避免刷新时主题闪烁。
+      // 逻辑与 src/stores/theme.ts 保持一致：优先 localStorage 中的用户选择，否则跟随系统。
+      try {
+        var t = localStorage.getItem('chat.theme')
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = t
+      } catch (e) { /* localStorage 不可用时保持默认浅色 */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>

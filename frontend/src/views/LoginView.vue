@@ -1,5 +1,10 @@
 <template>
   <div class="login-wrap">
+    <!-- 环境光斑背景层：三个大模糊渐变球缓慢漂移（纯装饰，pointer-events 关闭） -->
+    <div class="bg-fx" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+    <!-- 主题切换入口：登录页也可切换浅色/深色 -->
+    <div class="theme-corner"><ThemeToggle /></div>
+
     <div class="card">
       <!-- 品牌区：产品标识 + 副标题 -->
       <div class="brand">
@@ -9,9 +14,9 @@
               d="M21 12a8 8 0 0 1-8 8H5l-1.7 1.7A1 1 0 0 1 1.6 21l-.1-.44V12a8 8 0 0 1 8-8H13a8 8 0 0 1 8 8Z"
               fill="currentColor" opacity=".92"
             />
-            <circle cx="8.5" cy="12" r="1.3" fill="#fff" />
-            <circle cx="13" cy="12" r="1.3" fill="#fff" />
-            <circle cx="17.5" cy="12" r="1.3" fill="#fff" />
+            <circle cx="8.5" cy="12" r="1.3" fill="currentColor" />
+            <circle cx="13" cy="12" r="1.3" fill="currentColor" />
+            <circle cx="17.5" cy="12" r="1.3" fill="currentColor" />
           </svg>
         </div>
         <h1>Chat System</h1>
@@ -94,6 +99,7 @@ import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -145,28 +151,44 @@ async function submit() {
 </script>
 
 <style scoped>
-/* 页面底：主色极浅渐变，让白色卡片浮起来 */
+/* 页面底：主题底色 + 漂浮光斑（.bg-fx 全局类，深浅主题各一套配色） */
 .login-wrap {
+  position: relative;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  background:
-    radial-gradient(1200px 500px at 80% -10%, rgba(91, 108, 240, 0.10), transparent 60%),
-    radial-gradient(900px 420px at 10% 110%, rgba(91, 108, 240, 0.08), transparent 60%),
-    var(--bg-page);
+  background: var(--bg-page);
+  overflow: hidden; /* 裁掉光斑漂移的越界部分 */
+  transition: background-color var(--dur-base) ease;
+}
+
+/* 主题切换入口：页面右上角 */
+.theme-corner {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 2;
 }
 
 .card {
+  position: relative; /* 压在光斑层之上 */
+  z-index: 1;
   width: 400px;
   max-width: 100%;
-  background: var(--bg-card);
+  /* 玻璃拟态卡片：半透明底 + 背景模糊，光斑边缘透进来 */
+  background: var(--bg-glass-card);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 36px 32px 28px;
   box-shadow: var(--shadow-card);
-  animation: card-in 0.35s var(--ease-out);
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .card { animation: card-in 0.35s var(--ease-out); }
 }
 @keyframes card-in {
   from { opacity: 0; transform: translateY(10px) scale(0.98); }
@@ -179,21 +201,22 @@ async function submit() {
   margin: 0 auto var(--space-3);
   border-radius: 14px;
   display: flex; align-items: center; justify-content: center;
-  color: #fff;
-  background: linear-gradient(135deg, var(--color-primary), #8b5cf6);
-  box-shadow: 0 6px 16px rgba(91, 108, 240, 0.35);
+  color: var(--color-on-primary);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-grad-end));
+  box-shadow: var(--shadow-primary-lg);
 }
 .brand h1 { margin: 0; font-size: var(--text-2xl); font-weight: 700; letter-spacing: 0.2px; }
 .slogan { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--text-2); }
 
-/* ---- 分段控件：灰底轨道 + 白色滑块式选中项 ---- */
+/* ---- 分段控件：轨道底 + 浮块式选中项（深浅主题各一套对比色） ---- */
 .segment {
   display: flex;
   gap: var(--space-1);
-  background: var(--bg-hover);
+  background: var(--bg-track);
   border-radius: var(--radius-md);
   padding: var(--space-1);
   margin-bottom: var(--space-5);
+  transition: background-color var(--dur-base) ease;
 }
 .segment-item {
   flex: 1;
@@ -207,7 +230,7 @@ async function submit() {
 }
 .segment-item:hover:not(.on) { color: var(--text-1); background: transparent; }
 .segment-item.on {
-  background: var(--bg-card);
+  background: var(--bg-segment-on);
   color: var(--color-primary);
   font-weight: 600;
   box-shadow: var(--shadow-bubble);
@@ -225,7 +248,9 @@ async function submit() {
 .field input { width: 100%; padding: 9px 12px; }
 
 /* 昵称字段展开/收起过渡 */
-.slide-enter-active, .slide-leave-active { transition: all var(--dur-base) var(--ease-out); }
+@media (prefers-reduced-motion: no-preference) {
+  .slide-enter-active, .slide-leave-active { transition: all var(--dur-base) var(--ease-out); }
+}
 .slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-6px); }
 
 /* ---- 错误提示 ---- */
@@ -235,12 +260,14 @@ async function submit() {
   gap: 6px;
   color: var(--color-danger);
   background: var(--color-danger-soft);
-  border: 1px solid rgba(229, 72, 77, 0.25);
+  border: 1px solid var(--color-danger-border);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
   margin: 0 0 var(--space-4);
   padding: 8px 10px;
-  animation: shake 0.3s var(--ease-out);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .error { animation: shake 0.3s var(--ease-out); }
 }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
@@ -256,21 +283,21 @@ async function submit() {
   justify-content: center;
   gap: var(--space-2);
   border: none;
-  color: #fff;
+  color: var(--color-on-primary);
   font-size: var(--text-base);
   font-weight: 600;
   letter-spacing: 2px;
   padding: 10px;
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
-  box-shadow: 0 4px 12px rgba(91, 108, 240, 0.30);
+  box-shadow: var(--shadow-primary-lg);
   transition: filter var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .submit:hover:not(:disabled) { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); filter: brightness(1.05); }
-.submit:active:not(:disabled) { transform: translateY(1px); }
+.submit:active:not(:disabled) { transform: scale(0.98); }
 .submit:disabled { box-shadow: none; }
 
-/* CSS 实现的 loading 转圈，无需引入图标库 */
+/* CSS 实现的 loading 转圈（功能性状态指示，常转），无需引入图标库 */
 .spinner {
   width: 14px; height: 14px;
   border: 2px solid rgba(255, 255, 255, 0.4);

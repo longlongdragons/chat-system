@@ -1,5 +1,8 @@
 <template>
   <div class="chat-layout">
+    <!-- 环境光斑背景层：三个大模糊渐变球缓慢漂移（纯装饰，pointer-events 关闭） -->
+    <div class="bg-fx" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <header>
@@ -13,7 +16,10 @@
             </span>
           </div>
         </div>
-        <button class="logout" title="退出登录" @click="logout">退出</button>
+        <div class="header-actions">
+          <ThemeToggle />
+          <button class="logout" title="退出登录" @click="logout">退出</button>
+        </div>
       </header>
 
       <div class="quick-actions">
@@ -81,7 +87,8 @@
           </transition>
         </header>
 
-        <div ref="scrollEl" class="messages" @scroll="onScroll">
+        <div class="messages-wrap">
+          <div ref="scrollEl" class="messages" @scroll="onScroll">
           <!-- 向上翻页拉历史时的顶部加载指示 -->
           <div v-if="historyLoading" class="history-tip">
             <span class="spinner"></span>加载历史消息…
@@ -140,6 +147,14 @@
               </div>
             </div>
           </template>
+          </div>
+
+          <!-- 用户未贴底时收到新消息：底部浮出胶囊，点击一键回到底部 -->
+          <transition name="pill">
+            <button v-if="newBelow > 0" class="new-msg-pill" @click="jumpToLatest">
+              ↓ {{ newBelow > 1 ? `${newBelow} 条新消息` : '新消息' }}
+            </button>
+          </transition>
         </div>
 
         <footer class="composer">
@@ -189,10 +204,13 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore, type LocalMessage } from '@/stores/chat'
+import { useThemeStore } from '@/stores/theme'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 import { api, type User } from '@/api'
 
 const auth = useAuthStore()
 const chat = useChatStore()
+const theme = useThemeStore()
 const router = useRouter()
 
 const draft = ref('')
@@ -206,6 +224,8 @@ const historyLoading = ref(false)
 const historyDoneSet = ref(new Set<number>())
 /** 用户是否停留在消息区底部附近：决定新消息到达时是否自动跟随滚动 */
 const nearBottom = ref(true)
+/** 用户未贴底期间到达的新消息数：驱动底部"↓ 新消息"浮出胶囊 */
+const newBelow = ref(0)
 /** 翻历史时置位，抑制"消息数变化 → 滚到底部"的 watcher，改为恢复滚动锚点 */
 let suppressAutoScroll = false
 /** 上次发送 typing 帧的时间戳，用于 3 秒节流 */
@@ -219,21 +239,24 @@ const userCache = ref(new Map<number, User>())
 
 /**
  * 头像/昵称配色盘：按用户 ID 哈希取色，保证同一用户全局同色。
- * 色相选择饱和度适中的彩色，既能当文字色也能以低透明度做柔和底色。
+ * 深色主题使用提亮版配色，保证在暗底上的可读性；色相选择饱和度适中的彩色，
+ * 既能当文字色也能以低透明度做柔和底色。
  */
-const PALETTE = ['#5b6cf0', '#0e9f8a', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#0284c7', '#65a30d']
+const PALETTE_LIGHT = ['#5b6cf0', '#0e9f8a', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#0284c7', '#65a30d']
+const PALETTE_DARK = ['#8b93f8', '#2dd4bf', '#fbbf24', '#f87171', '#a78bfa', '#f472b6', '#38bdf8', '#a3e635']
+const palette = computed(() => (theme.mode === 'dark' ? PALETTE_DARK : PALETTE_LIGHT))
 
 function colorOf(seed: number | string): string {
   const s = String(seed)
   let h = 0
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-  return PALETTE[h % PALETTE.length]
+  return palette.value[h % palette.value.length]
 }
 
-/** 头像样式：柔和底色（主色 15% 透明）+ 同色系文字，替代原来单一蓝色 */
+/** 头像样式：柔和底色（低透明度的同色系）+ 彩色文字，深色下底色略浓一点 */
 function avatarStyle(seed: number | string) {
   const c = colorOf(seed)
-  return { background: `${c}26`, color: c }
+  return { background: `${c}${theme.mode === 'dark' ? '33' : '26'}`, color: c }
 }
 
 /** 取昵称首字符作为头像占位（无头像图时的文字头像） */
@@ -345,6 +368,7 @@ async function send() {
   if (!text || !chat.activeConversationId) return
   draft.value = ''
   nearBottom.value = true
+  newBelow.value = 0
   await chat.sendText(chat.activeConversationId, text)
   await nextTick()
   scrollToBottom()
@@ -365,7 +389,16 @@ function onScroll() {
   const el = scrollEl.value
   if (!el) return
   nearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  // 用户滚回底部，"新消息"胶囊随之消失
+  if (nearBottom.value) newBelow.value = 0
   if (el.scrollTop <= 20) void loadOlder()
+}
+
+/** 点击"↓ 新消息"胶囊：滚到底部并清零计数 */
+function jumpToLatest() {
+  nearBottom.value = true
+  newBelow.value = 0
+  scrollToBottom()
 }
 
 /**
@@ -460,13 +493,14 @@ watch(
   () => chat.activeConversationId,
   async () => {
     nearBottom.value = true
+    newBelow.value = 0
     await nextTick()
     scrollToBottom()
   },
 )
 
 // 新消息到达后滚到底部——但仅当用户本来就贴在底部（或消息是自己发的），
-// 避免用户向上翻历史时被新消息拽回底部
+// 避免用户向上翻历史时被新消息拽回底部；未贴底时改为累计"新消息"胶囊计数
 watch(
   () => chat.activeMessages.length,
   async () => {
@@ -474,7 +508,10 @@ watch(
     const list = chat.activeMessages
     const last = list[list.length - 1]
     const mine = !!last && last.sender_id === auth.user?.id
-    if (!nearBottom.value && !mine) return
+    if (!nearBottom.value && !mine) {
+      newBelow.value += 1
+      return
+    }
     await nextTick()
     scrollToBottom()
   },
@@ -482,8 +519,15 @@ watch(
 </script>
 
 <style scoped>
-/* ===== 整体布局：侧栏浅灰底与主区白底分层 ===== */
-.chat-layout { display: flex; height: 100%; background: var(--bg-card); }
+/* ===== 整体布局：光斑层铺底（.bg-fx 全局类），侧栏与主区内容压在其上 ===== */
+.chat-layout {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: var(--bg-page);
+  overflow: hidden; /* 裁掉光斑漂移的越界部分 */
+}
+.sidebar, .main { position: relative; z-index: 1; }
 
 .sidebar {
   width: 300px;
@@ -491,18 +535,22 @@ watch(
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  background: var(--bg-sidebar);
+  /* 玻璃拟态：半透明底 + 背景模糊，底层光斑隐约透出 */
+  background: var(--bg-glass);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 
-/* ---- 侧栏头部：我的信息 + 连接状态 ---- */
+/* ---- 侧栏头部：我的信息 + 连接状态 + 主题切换 ---- */
 .sidebar > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-card);
 }
+.header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .me { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .meta { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
 .meta strong { font-size: var(--text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -518,8 +566,10 @@ watch(
   width: 7px; height: 7px;
   border-radius: 50%;
   background: var(--color-warning);
-  /* 重连中黄点呼吸闪烁，提示连接不稳定 */
-  animation: pulse 1.2s ease-in-out infinite;
+}
+/* 重连中黄点呼吸闪烁，提示连接不稳定 */
+@media (prefers-reduced-motion: no-preference) {
+  .conn-badge .dot { animation: pulse 1.2s ease-in-out infinite; }
 }
 .conn-badge.on { color: var(--color-success); }
 .conn-badge.on .dot { background: var(--color-success); animation: none; }
@@ -538,7 +588,7 @@ watch(
 .new-chat, .new-group .row2 { display: flex; gap: 6px; }
 .new-chat input, .new-group input { flex: 1; min-width: 0; padding: 7px 10px; font-size: var(--text-xs); }
 .new-group { display: flex; flex-direction: column; gap: 6px; }
-.ghost-btn { font-size: var(--text-xs); padding: 6px 10px; flex-shrink: 0; color: var(--color-primary); border-color: rgba(91, 108, 240, 0.4); }
+.ghost-btn { font-size: var(--text-xs); padding: 6px 10px; flex-shrink: 0; color: var(--color-primary); border-color: var(--color-primary-border); }
 .ghost-btn:hover:not(:disabled) { background: var(--color-primary-soft); }
 
 /* ---- 会话列表 ---- */
@@ -580,8 +630,8 @@ watch(
 /* 自己的头像用主色渐变实心，在列表中突出身份 */
 .me-avatar {
   width: 36px; height: 36px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--color-primary), #8b5cf6);
+  color: var(--color-on-primary);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-grad-end));
 }
 
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -595,17 +645,17 @@ watch(
 .badge {
   min-width: 18px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #f2555a, var(--color-danger));
-  color: #fff;
+  background: var(--badge-bg);
+  color: var(--color-on-primary);
   font-size: 11px; font-weight: 600;
   border-radius: var(--radius-full);
   padding: 0 5px;
   flex-shrink: 0;
-  box-shadow: 0 1px 3px rgba(229, 72, 77, 0.4);
+  box-shadow: var(--shadow-badge);
 }
 
-/* ===== 主聊天区 ===== */
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-card); }
+/* ===== 主聊天区（透明底，透出光斑层） ===== */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 .chat-header {
   display: flex;
@@ -614,15 +664,19 @@ watch(
   gap: var(--space-3);
   padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-card);
+  /* 玻璃拟态顶栏 */
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
   box-shadow: var(--shadow-header);
   z-index: 1; /* 让阴影压在消息区之上 */
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .title-wrap { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .title-wrap strong { font-size: var(--text-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-id { color: var(--text-3); font-size: var(--text-xs); flex-shrink: 0; }
 
-/* 头部 typing 提示：主色文字 + 三个依次跳动的圆点 */
+/* 头部 typing 提示：主色文字 + 三个波浪式依次跳动的圆点 */
 .typing-hint {
   display: inline-flex;
   align-items: center;
@@ -635,23 +689,35 @@ watch(
   width: 4px; height: 4px;
   border-radius: 50%;
   background: var(--color-primary);
-  animation: bounce 1.2s ease-in-out infinite;
 }
-.typing-hint .tdot:nth-child(2) { animation-delay: 0.15s; }
-.typing-hint .tdot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
-  30% { transform: translateY(-3px); opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .typing-hint .tdot { animation: wave 1.2s ease-in-out infinite; }
+  .typing-hint .tdot:nth-child(2) { animation-delay: 0.12s; }
+  .typing-hint .tdot:nth-child(3) { animation-delay: 0.24s; }
 }
-.fade-enter-active, .fade-leave-active { transition: opacity var(--dur-base) var(--ease-out); }
+@keyframes wave {
+  0%, 60%, 100% { transform: translateY(0) scale(1); opacity: 0.5; }
+  30% { transform: translateY(-4px) scale(1.2); opacity: 1; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fade-enter-active, .fade-leave-active { transition: opacity var(--dur-base) var(--ease-out); }
+}
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* ---- 消息区：极浅渐变底，与白底气泡形成层次 ---- */
+/* ---- 消息区包装：承载滚动列表与"新消息"浮层胶囊 ---- */
+.messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .messages {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-5) var(--space-5) var(--space-4);
-  background: linear-gradient(180deg, #fbfcfe 0%, #f4f6fa 100%);
+  /* 半透明渐变底（令牌为渐变值），底层光斑隐约透出 */
+  background: var(--bg-messages);
 }
 
 .history-tip {
@@ -668,7 +734,7 @@ watch(
   border: 2px solid var(--border-strong);
   border-top-color: var(--color-primary);
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  animation: spin 0.7s linear infinite; /* 加载指示属功能性反馈，常转 */
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -692,10 +758,13 @@ watch(
   margin-bottom: var(--space-4);
   content-visibility: auto;
   contain-intrinsic-size: auto 64px;
-  animation: msg-in 0.2s var(--ease-out); /* 新消息轻微上浮淡入 */
+}
+/* 新消息弹性入场：淡入 + 轻缩小回弹 + 上移（尊重减少动效偏好） */
+@media (prefers-reduced-motion: no-preference) {
+  .msg { animation: msg-in 0.3s var(--ease-spring); }
 }
 @keyframes msg-in {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
 }
 .msg.mine { flex-direction: row-reverse; }
 .msg .avatar { width: 34px; height: 34px; font-size: var(--text-sm); margin-top: 2px; }
@@ -716,15 +785,34 @@ watch(
   line-height: 1.55;
   word-break: break-word;
   white-space: pre-wrap;
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease, color var(--dur-base) ease;
 }
 .msg.mine .bubble {
   border-radius: 12px 12px 4px 12px;
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
   border-color: transparent;
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(91, 108, 240, 0.28);
+  color: var(--color-on-primary);
+  box-shadow: var(--shadow-primary);
+  position: relative;
+  overflow: hidden; /* 把微光扫过裁进气泡圆角内 */
 }
-/* 撤回的消息退化为灰色中性样式 */
+/* 自己气泡的渐变微光：一道周期性扫过的高光带（动画只改 transform） */
+.msg.mine .bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 42%, rgba(255, 255, 255, 0.16) 50%, transparent 58%);
+  transform: translateX(-130%);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .msg.mine .bubble::after { animation: sheen 6s ease-in-out 1.2s infinite; }
+}
+@keyframes sheen {
+  0% { transform: translateX(-130%); }
+  55%, 100% { transform: translateX(130%); }
+}
+/* 撤回的消息退化为灰色中性样式（并去掉微光） */
 .bubble.recalled {
   background: var(--bg-hover);
   border-color: var(--border);
@@ -733,38 +821,74 @@ watch(
   box-shadow: none;
 }
 .msg.mine .bubble.recalled { background: var(--bg-hover); color: var(--text-3); }
+.msg.mine .bubble.recalled::after { display: none; }
 .bubble img { max-width: 240px; border-radius: var(--radius-sm); display: block; }
-.msg.mine .bubble a { color: #fff; text-decoration: underline; }
+.msg.mine .bubble a { color: var(--color-on-primary); text-decoration: underline; }
 
 .msg-meta { font-size: var(--text-xs); color: var(--text-3); margin-top: 4px; display: flex; gap: var(--space-2); padding: 0 2px; }
 .sending { color: var(--text-3); }
 .failed { color: var(--color-danger); cursor: pointer; font-weight: 500; }
 .failed:hover { text-decoration: underline; }
 
-/* ---- 输入区 ---- */
+/* ---- 输入区（玻璃拟态） ---- */
 .composer {
   display: flex;
   gap: 10px;
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--border);
-  background: var(--bg-card);
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .composer input { flex: 1; padding: 10px 14px; border-radius: var(--radius-md); font-size: var(--text-base); }
 .send-btn {
   border: none;
-  color: #fff;
+  color: var(--color-on-primary);
   font-weight: 600;
   padding: 0 22px;
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
-  box-shadow: 0 2px 8px rgba(91, 108, 240, 0.28);
+  box-shadow: var(--shadow-primary);
   transition: filter var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .send-btn:hover:not(:disabled) { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); filter: brightness(1.06); }
-.send-btn:active:not(:disabled) { transform: translateY(1px); }
+.send-btn:active:not(:disabled) { transform: scale(0.95); }
 .send-btn:disabled { box-shadow: none; }
+/* 输入框有内容（发送键可用）时轻微脉冲呼吸，引导发送 */
+@media (prefers-reduced-motion: no-preference) {
+  .send-btn:not(:disabled) { animation: btn-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes btn-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
 
-/* ---- 空会话占位页 ---- */
+/* ---- "↓ 新消息"浮出胶囊 ---- */
+.new-msg-pill {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  translate: -50% 0; /* 用独立 translate 属性居中，不与过渡的 transform 冲突 */
+  border: none;
+  color: var(--color-on-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 7px 16px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
+  box-shadow: var(--shadow-pop);
+  z-index: 2;
+}
+.new-msg-pill:hover:not(:disabled) { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); filter: brightness(1.06); }
+@media (prefers-reduced-motion: no-preference) {
+  .pill-enter-active, .pill-leave-active {
+    transition: opacity var(--dur-base) var(--ease-spring), transform var(--dur-base) var(--ease-spring);
+  }
+}
+.pill-enter-from, .pill-leave-to { opacity: 0; transform: translateY(10px) scale(0.9); }
+
+/* ---- 空会话占位页（透明底透出光斑） ---- */
 .placeholder {
   flex: 1;
   display: flex;
@@ -772,7 +896,6 @@ watch(
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background: linear-gradient(180deg, #fbfcfe 0%, #f4f6fa 100%);
 }
 .placeholder-icon {
   width: 96px; height: 96px;
