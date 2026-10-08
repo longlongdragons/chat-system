@@ -3,30 +3,88 @@
     <!-- 环境光斑背景层：三个大模糊渐变球缓慢漂移（纯装饰，pointer-events 关闭） -->
     <div class="bg-fx" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
 
-    <!-- 侧边栏 -->
-    <aside class="sidebar">
-      <header>
-        <div class="me">
-          <div class="avatar me-avatar">{{ initials(auth.user?.nickname) }}</div>
-          <div class="meta">
-            <strong>{{ auth.user?.nickname }}</strong>
-            <!-- 连接状态徽标：已连接绿点 / 重连中黄点 -->
-            <span :class="['conn-badge', { on: chat.connected }]">
-              <i class="dot"></i>{{ chat.connected ? '已连接' : '重连中…' }}
-            </span>
-          </div>
-        </div>
-        <div class="header-actions">
-          <ThemeToggle />
-          <button class="logout" title="退出登录" @click="logout">退出</button>
+    <!-- ===== 第 1 栏：图标导航栏（Discord 风格深色窄栏） ===== -->
+    <nav class="rail">
+      <!-- 我的头像：右下角叠连接状态点（绿=已连接 / 黄=重连中） -->
+      <div class="rail-me" :title="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`">
+        <div class="avatar me-avatar">{{ initials(auth.user?.nickname) }}</div>
+        <i :class="['status-dot', { on: chat.connected }]"></i>
+      </div>
+
+      <!-- 分类导航：消息 / 单聊 / 群聊 / 联系人 -->
+      <div class="rail-nav">
+        <button :class="['rail-btn', { on: category === 'all' }]" title="消息" @click="selectCategory('all')">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H8l-4.3 3.1a.6.6 0 0 1-1-.5V11.5A8.5 8.5 0 0 1 11.2 3h1.3a8.5 8.5 0 0 1 8.5 8.5Z" />
+          </svg>
+          <span v-if="unreadTotal > 0" class="rail-badge">{{ unreadTotal > 99 ? '99+' : unreadTotal }}</span>
+        </button>
+
+        <button :class="['rail-btn', { on: category === 'direct' }]" title="单聊" @click="selectCategory('direct')">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4.5 20.5a7.5 7.5 0 0 1 15 0" />
+          </svg>
+          <span v-if="unreadDirect > 0" class="rail-badge">{{ unreadDirect > 99 ? '99+' : unreadDirect }}</span>
+        </button>
+
+        <button :class="['rail-btn', { on: category === 'group' }]" title="群聊" @click="selectCategory('group')">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="9" cy="8.5" r="3.4" />
+            <path d="M2.8 19.5a6.2 6.2 0 0 1 12.4 0" />
+            <path d="M15.5 5.6a3.4 3.4 0 1 1 1.6 6.4" />
+            <path d="M17.6 13.7a6.2 6.2 0 0 1 3.6 5.8" />
+          </svg>
+          <span v-if="unreadGroup > 0" class="rail-badge">{{ unreadGroup > 99 ? '99+' : unreadGroup }}</span>
+        </button>
+
+        <button :class="['rail-btn', { on: category === 'contacts' }]" title="联系人" @click="selectCategory('contacts')">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="3" width="16" height="18" rx="2.5" />
+            <circle cx="12" cy="10" r="2.6" />
+            <path d="M7.8 16.6a4.4 4.4 0 0 1 8.4 0" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- 底部：主题切换 + 退出 -->
+      <div class="rail-bottom">
+        <ThemeToggle />
+        <button class="rail-btn" title="退出登录" @click="logout">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3" />
+            <path d="m16 17 5-5-5-5" />
+            <path d="M21 12H9" />
+          </svg>
+        </button>
+      </div>
+    </nav>
+
+    <!-- ===== 第 2 栏：分类列表栏 ===== -->
+    <aside class="panel">
+      <header class="panel-header">
+        <strong class="panel-title">{{ panelTitle }}</strong>
+        <!-- 搜索框：仅前端过滤当前分类列表，按昵称/标题匹配 -->
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.2-3.2" />
+          </svg>
+          <input v-model.trim="searchText" placeholder="搜索" />
         </div>
       </header>
 
-      <div class="quick-actions">
+      <!-- 断线时顶部横幅提示（连接状态在窄栏里只有一个状态点，这里给出文字说明） -->
+      <div v-if="!chat.connected" class="conn-banner"><i class="dot"></i>连接已断开，正在重连…</div>
+
+      <!-- 分类快捷操作：发起单聊/群聊从旧侧栏挪到对应分类面板顶部 -->
+      <div v-if="category === 'direct'" class="panel-actions">
         <div class="new-chat">
           <input v-model.trim="peerIdInput" placeholder="对方用户 ID" @keyup.enter="startDirect" />
-          <button class="ghost-btn" @click="startDirect">单聊</button>
+          <button class="ghost-btn" @click="startDirect">发起</button>
         </div>
+      </div>
+      <div v-else-if="category === 'group'" class="panel-actions">
         <div class="new-group">
           <input v-model.trim="groupNameInput" placeholder="群名称" @keyup.enter="startGroup" />
           <div class="row2">
@@ -35,14 +93,35 @@
               placeholder="成员 ID，逗号分隔，如 1,2"
               @keyup.enter="startGroup"
             />
-            <button class="ghost-btn" @click="startGroup">群聊</button>
+            <button class="ghost-btn" @click="startGroup">发起</button>
           </div>
         </div>
       </div>
 
-      <ul class="conv-list">
+      <!-- 联系人分类：只读列表，点击即开聊 -->
+      <ul v-if="category === 'contacts'" class="conv-list">
+        <li v-for="u in filteredContacts" :key="u.id" @click="openContact(u.id)">
+          <div class="avatar" :style="avatarStyle(u.id)">{{ initials(u.nickname || u.username) }}</div>
+          <div class="body">
+            <div class="row">
+              <strong>{{ u.nickname || u.username || `用户 ${u.id}` }}</strong>
+            </div>
+            <div class="row">
+              <span :class="['contact-status', { on: isOnline(u.id) }]">
+                <i class="dot"></i>{{ isOnline(u.id) ? '在线' : '离线' }}
+              </span>
+            </div>
+          </div>
+        </li>
+        <li v-if="filteredContacts.length === 0" class="empty">
+          {{ searchText ? '没有匹配的联系人' : '暂无联系人，去发起单聊吧' }}
+        </li>
+      </ul>
+
+      <!-- 会话列表（消息 / 单聊 / 群聊分类共用，按分类与搜索词过滤） -->
+      <ul v-else class="conv-list">
         <li
-          v-for="c in chat.conversations"
+          v-for="c in filteredConversations"
           :key="c.id"
           :class="{ active: c.id === chat.activeConversationId }"
           @click="chat.openConversation(c.id)"
@@ -65,11 +144,11 @@
             </div>
           </div>
         </li>
-        <li v-if="chat.conversations.length === 0" class="empty">暂无会话，发起一个吧</li>
+        <li v-if="filteredConversations.length === 0" class="empty">{{ convEmptyText }}</li>
       </ul>
     </aside>
 
-    <!-- 聊天区 -->
+    <!-- ===== 第 3 栏：聊天主区 ===== -->
     <main class="main">
       <template v-if="chat.activeConversationId">
         <header class="chat-header">
@@ -182,7 +261,7 @@
           </svg>
         </div>
         <p class="placeholder-title">选择一个会话开始聊天</p>
-        <p class="placeholder-sub">从左侧列表选择会话，或输入用户 ID 发起新的单聊 / 群聊</p>
+        <p class="placeholder-sub">在中间列表选择会话，或到「单聊 / 群聊」分类下发起新会话</p>
       </div>
     </main>
   </div>
@@ -190,15 +269,17 @@
 
 <script setup lang="ts">
 /**
- * 聊天主页面。
+ * 聊天主页面（三栏布局：图标导航栏 + 分类列表栏 + 聊天主区）。
  *
- * 左侧为会话列表（含未读角标、最后一条消息预览、连接状态指示），
- * 右侧为当前会话的消息区与输入框。
+ * - 第 1 栏（.rail）：分类导航（消息/单聊/群聊/联系人），附各类未读合计徽标、
+ *   主题切换与退出入口；顶部头像叠连接状态点。
+ * - 第 2 栏（.panel）：随分类切换标题与列表内容；顶部搜索框做前端过滤；
+ *   发起单聊/群聊的输入区挪到对应分类面板顶部；联系人列表由单聊会话的 peer 派生。
+ * - 第 3 栏（.main）：消息区与输入框，功能不变。
  *
  * 本组件只负责视图与交互编排，实际的消息收发、历史分页、已读上报、
- * WebSocket 重连等逻辑都封装在 chat store 中：
- * - 发送消息走 store 的乐观更新（先上屏，等网关 ack 关联回写状态）；
- * - 向上滚动到顶部时按序号游标分页拉取更早的历史消息。
+ * WebSocket 重连等逻辑都封装在 chat store 中；分类/搜索状态是组件内局部状态，
+ * 不写入、也不清空 chat store 的任何数据。
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -218,6 +299,12 @@ const peerIdInput = ref('')
 const groupNameInput = ref('')
 const groupMembersInput = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
+
+/** 分类导航状态（组件内局部状态，与 chat store 解耦） */
+type Category = 'all' | 'direct' | 'group' | 'contacts'
+const category = ref<Category>('all')
+/** 第 2 栏搜索词：前端过滤当前分类列表 */
+const searchText = ref('')
 
 /** 历史翻页加载态与"已到顶"标记（按会话记忆，避免重复空拉） */
 const historyLoading = ref(false)
@@ -293,6 +380,75 @@ const typingText = computed(() => {
   if (names.length === 1) return `${names[0]} 正在输入`
   return `${names.length} 人正在输入`
 })
+
+/* ===== 三栏布局：分类导航 / 过滤 / 联系人派生 ===== */
+
+/** 第 2 栏标题随分类切换 */
+const panelTitle = computed(() => {
+  const map: Record<Category, string> = { all: '消息', direct: '单聊', group: '群聊', contacts: '联系人' }
+  return map[category.value]
+})
+
+/** 各类目未读合计（导航图标上的徽标） */
+const unreadTotal = computed(() => chat.conversations.reduce((s, c) => s + c.member.unread_count, 0))
+const unreadDirect = computed(() => chat.conversations.reduce((s, c) => (c.type === 1 ? s + c.member.unread_count : s), 0))
+const unreadGroup = computed(() => chat.conversations.reduce((s, c) => (c.type === 2 ? s + c.member.unread_count : s), 0))
+
+const norm = (s?: string) => (s ?? '').toLowerCase()
+
+/** 当前分类 + 搜索词过滤后的会话列表 */
+const filteredConversations = computed(() => {
+  const kw = norm(searchText.value)
+  return chat.conversations.filter((c) => {
+    if (category.value === 'direct' && c.type !== 1) return false
+    if (category.value === 'group' && c.type !== 2) return false
+    if (!kw) return true
+    const name = c.peer?.nickname || c.peer?.username || c.title || `#${c.id}`
+    return norm(name).includes(kw)
+  })
+})
+
+/**
+ * 联系人列表：从单聊会话（type=1）中提取对端用户，按 id 去重。
+ * 纯前端派生，不额外请求接口。
+ */
+const contacts = computed<User[]>(() => {
+  const map = new Map<number, User>()
+  for (const c of chat.conversations) {
+    if (c.type === 1 && c.peer && c.peer.id !== auth.user?.id) map.set(c.peer.id, c.peer)
+  }
+  return [...map.values()]
+})
+
+/** 联系人 + 搜索词过滤 */
+const filteredContacts = computed(() => {
+  const kw = norm(searchText.value)
+  if (!kw) return contacts.value
+  return contacts.value.filter((u) => norm(u.nickname).includes(kw) || norm(u.username).includes(kw))
+})
+
+/** 会话列表空态文案随分类/搜索态变化 */
+const convEmptyText = computed(() => {
+  if (searchText.value) return '没有匹配的会话'
+  const map: Record<Category, string> = {
+    all: '暂无会话，发起一个吧',
+    direct: '暂无单聊会话',
+    group: '暂无群聊会话',
+    contacts: '',
+  }
+  return map[category.value]
+})
+
+/** 切换分类：同时清空搜索词，避免旧关键词误过滤新分类 */
+function selectCategory(c: Category) {
+  category.value = c
+  searchText.value = ''
+}
+
+/** 联系人是否在线（presence 帧维护的在线集合） */
+function isOnline(userId: number): boolean {
+  return chat.onlineUsers.has(userId)
+}
 
 /** 时间显示：24 小时内显示时刻，更早的显示月-日 */
 function fmtTime(iso?: string) {
@@ -433,18 +589,31 @@ async function loadOlder() {
   suppressAutoScroll = false
 }
 
-/** 按对方用户 ID 发起单聊：后端幂等复用已有会话，随后刷新列表并直接打开 */
-async function startDirect() {
-  const id = Number(peerIdInput.value)
-  if (!id || Number.isNaN(id)) return
+/**
+ * 按对方用户 ID 打开单聊：后端幂等复用已有会话，刷新列表后直接打开。
+ * 供"发起单聊"输入框与联系人列表点击共用。
+ */
+async function openDirectWith(userId: number) {
   try {
-    const conv = await api.createDirect(id)
-    peerIdInput.value = ''
+    const conv = await api.createDirect(userId)
     await chat.loadConversations()
     await chat.openConversation(conv.id)
   } catch (e) {
     console.error(e)
   }
+}
+
+/** 发起单聊：解析输入框里的用户 ID 后走 openDirectWith */
+async function startDirect() {
+  const id = Number(peerIdInput.value)
+  if (!id || Number.isNaN(id)) return
+  peerIdInput.value = ''
+  await openDirectWith(id)
+}
+
+/** 点击联系人：幂等创建/复用单聊会话并直接打开 */
+async function openContact(userId: number) {
+  await openDirectWith(userId)
 }
 
 /** 发起群聊：填群名和逗号分隔的成员 ID（自己作为群主自动入群） */
@@ -519,7 +688,7 @@ watch(
 </script>
 
 <style scoped>
-/* ===== 整体布局：光斑层铺底（.bg-fx 全局类），侧栏与主区内容压在其上 ===== */
+/* ===== 整体布局：光斑层铺底（.bg-fx 全局类），三栏内容压在其上 ===== */
 .chat-layout {
   position: relative;
   display: flex;
@@ -527,58 +696,157 @@ watch(
   background: var(--bg-page);
   overflow: hidden; /* 裁掉光斑漂移的越界部分 */
 }
-.sidebar, .main { position: relative; z-index: 1; }
+.rail, .panel, .main { position: relative; z-index: 1; }
 
-.sidebar {
-  width: 300px;
+/* ===== 第 1 栏：图标导航栏（深色窄栏，Discord 风格） ===== */
+.rail {
+  width: 68px;
   flex-shrink: 0;
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  /* 玻璃拟态：半透明底 + 背景模糊，底层光斑隐约透出 */
+  align-items: center;
+  padding: var(--space-3) 0;
+  gap: var(--space-3);
+  background: var(--bg-rail);
+  border-right: 1px solid var(--border);
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
+}
+
+/* 顶部我的头像 + 连接状态点 */
+.rail-me { position: relative; margin-bottom: var(--space-1); }
+.status-dot {
+  position: absolute;
+  right: -2px; bottom: -2px;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  border: 2px solid var(--bg-rail); /* 描边色与栏底一致，形成镂空效果 */
+}
+@media (prefers-reduced-motion: no-preference) {
+  .status-dot:not(.on) { animation: pulse 1.2s ease-in-out infinite; } /* 重连中呼吸闪烁 */
+}
+.status-dot.on { background: var(--color-success); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.rail-nav { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.rail-bottom { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+/* 导航图标按钮：默认灰，hover 提亮，选中态主色填充 + 栏左缘指示条 */
+.rail-btn {
+  position: relative;
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  padding: 0;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.rail-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
+.rail-btn.on {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
+  color: var(--color-on-primary);
+  box-shadow: var(--shadow-primary);
+}
+/* 选中态左侧指示条：贴在导航栏左缘（按钮居中，用负 left 探到栏边缘） */
+.rail-btn.on::before {
+  content: '';
+  position: absolute;
+  left: -12px; top: 50%;
+  transform: translateY(-50%);
+  width: 4px; height: 55%;
+  border-radius: 0 var(--radius-full) var(--radius-full) 0;
+  background: var(--color-primary);
+}
+
+/* 导航图标上的未读合计徽标：右上角小红胶囊，描边镂空 */
+.rail-badge {
+  position: absolute;
+  top: -3px; right: -5px;
+  min-width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--badge-bg);
+  color: var(--color-on-primary);
+  font-size: 10px; font-weight: 600;
+  border-radius: var(--radius-full);
+  padding: 0 4px;
+  border: 2px solid var(--bg-rail);
+}
+
+/* 导航栏里的主题切换按钮：改为透明底图标风格，与其他栏内按钮一致 */
+.rail-bottom :deep(.theme-toggle) {
+  width: 44px; height: 44px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+}
+.rail-bottom :deep(.theme-toggle:hover:not(:disabled)) { background: var(--bg-hover); color: var(--text-1); }
+
+/* ===== 第 2 栏：分类列表栏（玻璃拟态） ===== */
+.panel {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
   background: var(--bg-glass);
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
   transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 
-/* ---- 侧栏头部：我的信息 + 连接状态 + 主题切换 ---- */
-.sidebar > header {
+.panel-header {
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.panel-title { font-size: var(--text-lg); font-weight: 700; padding: 0 var(--space-1); }
+
+/* 搜索框：放大镜图标内嵌左侧 */
+.search-box { position: relative; }
+.search-box svg {
+  position: absolute;
+  left: 10px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.search-box input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+}
+
+/* 断线横幅：窄栏里只有一个状态点，文字说明放在列表栏顶部 */
+.conn-banner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
-}
-.header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.me { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.meta { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
-.meta strong { font-size: var(--text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.conn-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--text-xs);
+  gap: 6px;
+  margin: var(--space-2) var(--space-3) 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft);
   color: var(--color-warning);
+  font-size: var(--text-xs);
+  font-weight: 500;
 }
-.conn-badge .dot {
+.conn-banner .dot {
   width: 7px; height: 7px;
   border-radius: 50%;
   background: var(--color-warning);
+  flex-shrink: 0;
 }
-/* 重连中黄点呼吸闪烁，提示连接不稳定 */
 @media (prefers-reduced-motion: no-preference) {
-  .conn-badge .dot { animation: pulse 1.2s ease-in-out infinite; }
+  .conn-banner .dot { animation: pulse 1.2s ease-in-out infinite; }
 }
-.conn-badge.on { color: var(--color-success); }
-.conn-badge.on .dot { background: var(--color-success); animation: none; }
-@keyframes pulse { 50% { opacity: 0.35; } }
 
-.logout { font-size: var(--text-xs); padding: 4px 10px; color: var(--text-2); }
-
-/* ---- 发起单聊/群聊快捷区 ---- */
-.quick-actions {
+/* ---- 分类快捷操作（发起单聊/群聊） ---- */
+.panel-actions {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -591,7 +859,7 @@ watch(
 .ghost-btn { font-size: var(--text-xs); padding: 6px 10px; flex-shrink: 0; color: var(--color-primary); border-color: var(--color-primary-border); }
 .ghost-btn:hover:not(:disabled) { background: var(--color-primary-soft); }
 
-/* ---- 会话列表 ---- */
+/* ---- 会话/联系人列表 ---- */
 .conv-list { list-style: none; margin: 0; padding: var(--space-2); overflow-y: auto; flex: 1; }
 .conv-list li {
   position: relative;
@@ -616,7 +884,7 @@ watch(
   background: var(--color-primary);
 }
 .conv-list li.active strong { color: var(--color-primary); }
-.conv-list li.empty { justify-content: center; color: var(--text-3); font-size: var(--text-sm); cursor: default; }
+.conv-list li.empty { justify-content: center; color: var(--text-3); font-size: var(--text-sm); cursor: default; padding: var(--space-5) var(--space-3); text-align: center; }
 .conv-list li.empty:hover { background: transparent; }
 
 .avatar {
@@ -627,9 +895,9 @@ watch(
   flex-shrink: 0;
   user-select: none;
 }
-/* 自己的头像用主色渐变实心，在列表中突出身份 */
+/* 自己的头像用主色渐变实心，在导航栏里突出身份 */
 .me-avatar {
-  width: 36px; height: 36px;
+  width: 40px; height: 40px;
   color: var(--color-on-primary);
   background: linear-gradient(135deg, var(--color-primary), var(--color-primary-grad-end));
 }
@@ -640,6 +908,18 @@ watch(
 .row small { color: var(--text-3); font-size: var(--text-xs); flex-shrink: 0; }
 .preview { font-size: var(--text-sm); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .typing-preview { font-size: var(--text-sm); color: var(--color-primary); font-style: italic; }
+
+/* 联系人在线状态：灰点离线 / 绿点在线 */
+.contact-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.contact-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
+.contact-status.on { color: var(--color-success); }
+.contact-status.on .dot { background: var(--color-success); }
 
 /* 未读角标：胶囊形、渐变红、超 99 折叠 */
 .badge {
@@ -654,7 +934,7 @@ watch(
   box-shadow: var(--shadow-badge);
 }
 
-/* ===== 主聊天区（透明底，透出光斑层） ===== */
+/* ===== 第 3 栏：聊天主区（透明底，透出光斑层） ===== */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 .chat-header {
@@ -907,4 +1187,9 @@ watch(
 }
 .placeholder-title { margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--text-1); }
 .placeholder-sub { margin: 0; font-size: var(--text-sm); color: var(--text-3); }
+
+/* ---- 窄屏兜底：第 2 栏收窄，主区弹性 ---- */
+@media (max-width: 900px) {
+  .panel { width: 220px; }
+}
 </style>
