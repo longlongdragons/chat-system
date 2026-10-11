@@ -1,0 +1,16 @@
+# ko 构建配置：免 Docker 守护进程构建 api/gateway 镜像
+# 基础镜像用 alpine（带 shell/ca-cert/时区/可写目录），
+# 程序需要写 UPLOAD_DIR 上传目录，distroless 不适合。
+defaultBaseImage: alpine:3.20
+
+builds:
+  - id: api
+    dir: .
+    main: ./cmd/api
+    env:
+      - CGO_ENABLED=0
+  - id: gateway
+    dir: .
+    main: ./cmd/gateway
+    env:
+      - CGO_ENABLED=0
