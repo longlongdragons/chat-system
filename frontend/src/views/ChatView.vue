@@ -5,11 +5,12 @@
 
     <!-- ===== 第 1 栏：图标导航栏（Discord 风格深色窄栏） ===== -->
     <nav class="rail">
-      <!-- 我的头像：右下角叠连接状态点（绿=已连接 / 黄=重连中） -->
+      <!-- 我的头像：右下角叠连接状态点（绿=已连接 / 黄=重连中）；点击弹出个人资料卡 -->
       <div
-        class="rail-me"
-        :data-tip="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`"
-        :aria-label="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}）`"
+        class="rail-me clickable"
+        :data-tip="`${auth.user?.nickname ?? ''}（${chat.connected ? '已连接' : '重连中'}），点击编辑资料`"
+        :aria-label="`${auth.user?.nickname ?? ''}，点击编辑资料`"
+        @click="profileOpen = true"
       >
         <div class="avatar me-avatar">{{ initials(auth.user?.nickname) }}</div>
         <i :class="['status-dot', { on: chat.connected }]"></i>
@@ -102,8 +103,10 @@
         </div>
       </div>
 
-      <!-- 联系人分类：只读列表，点击即开聊 -->
+      <!-- 联系人分类：本地联系人 + 远端"全网用户"搜索，点击即开聊 -->
       <ul v-if="category === 'contacts'" class="conv-list">
+        <!-- 搜索态下分两个区块展示 -->
+        <li v-if="searchText" class="section-title">我的联系人</li>
         <li v-for="u in filteredContacts" :key="u.id" @click="openContact(u.id)">
           <div class="avatar" :style="avatarStyle(u.id)">{{ initials(u.nickname || u.username) }}</div>
           <div class="body">
@@ -117,9 +120,26 @@
             </div>
           </div>
         </li>
-        <li v-if="filteredContacts.length === 0" class="empty">
-          {{ searchText ? '没有匹配的联系人' : '暂无联系人，去发起单聊吧' }}
-        </li>
+        <li v-if="filteredContacts.length === 0 && !searchText" class="empty">暂无联系人，去发起单聊吧</li>
+        <li v-else-if="filteredContacts.length === 0" class="empty-sm">无匹配联系人</li>
+
+        <!-- 远端搜索区块：输入关键词时防抖调 /users/search -->
+        <template v-if="searchText">
+          <li class="section-title">全网用户</li>
+          <li v-for="u in remoteUsers" :key="'remote-' + u.id" @click="openContact(u.id)">
+            <div class="avatar" :style="avatarStyle(u.id)">{{ initials(u.nickname || u.username) }}</div>
+            <div class="body">
+              <div class="row">
+                <strong>{{ u.nickname || u.username || `用户 ${u.id}` }}</strong>
+              </div>
+              <div class="row">
+                <span class="preview">@{{ u.username || u.id }}</span>
+              </div>
+            </div>
+          </li>
+          <li v-if="searching" class="empty-sm">搜索中…</li>
+          <li v-else-if="remoteUsers.length === 0" class="empty-sm">无匹配用户</li>
+        </template>
       </ul>
 
       <!-- 会话列表（消息 / 单聊 / 群聊分类共用，按分类与搜索词过滤） -->
@@ -162,12 +182,16 @@
             </strong>
             <small class="conv-id">#{{ chat.activeConversationId }}</small>
           </div>
-          <!-- 对端正在此会话输入时，头部展示"xxx 正在输入"（带跳动圆点） -->
-          <transition name="fade">
-            <span v-if="typingText" class="typing-hint">
-              {{ typingText }}<i class="tdot"></i><i class="tdot"></i><i class="tdot"></i>
-            </span>
-          </transition>
+          <div class="header-right">
+            <!-- 对端正在此会话输入时，头部展示"xxx 正在输入"（带跳动圆点） -->
+            <transition name="fade">
+              <span v-if="typingText" class="typing-hint">
+                {{ typingText }}<i class="tdot"></i><i class="tdot"></i><i class="tdot"></i>
+              </span>
+            </transition>
+            <!-- 群聊会话：打开群管理抽屉（成员列表 / 拉人 / 踢人） -->
+            <button v-if="isGroup" class="ghost-btn members-btn" @click="drawerOpen = !drawerOpen">成员</button>
+          </div>
         </header>
 
         <div class="messages-wrap">
@@ -201,18 +225,65 @@
                   <template v-if="row.msg.status === 2">
                     <em>消息已撤回</em>
                   </template>
-                  <template v-else-if="row.msg.type === 1">
-                    {{ row.msg.content?.text }}
-                  </template>
-                  <template v-else-if="row.msg.type === 2">
-                    <img :src="row.msg.content?.url" :alt="'image'" />
-                  </template>
-                  <template v-else-if="row.msg.type === 4">
-                    <em>{{ row.msg.content?.text }}</em>
-                  </template>
                   <template v-else>
-                    <a :href="row.msg.content?.url" target="_blank">{{ row.msg.content?.name || '文件' }}</a>
+                    <!-- 引用块：正文上方显示被引用消息摘要；找不到原文（未加载/已删）显示占位文案 -->
+                    <div v-if="row.msg.quote_msg_id" class="quote-block">
+                      <template v-if="quoteOf(row.msg)">
+                        <strong>{{ quoteOf(row.msg)!.name }}</strong>
+                        <span>{{ quoteOf(row.msg)!.text }}</span>
+                      </template>
+                      <span v-else class="quote-missing">原消息已删除或不在当前页</span>
+                    </div>
+                    <template v-if="row.msg.type === 1">
+                      {{ row.msg.content?.text }}
+                    </template>
+                    <!-- 图片消息：URL 带 token 访问；点击放大（lightbox） -->
+                    <template v-else-if="row.msg.type === 2">
+                      <img
+                        :src="withToken(row.msg.content?.url)"
+                        :alt="row.msg.content?.name || '图片'"
+                        @click="lightboxUrl = withToken(row.msg.content?.url)"
+                      />
+                    </template>
+                    <template v-else-if="row.msg.type === 4">
+                      <em>{{ row.msg.content?.text }}</em>
+                    </template>
+                    <!-- 文件消息（type=3）：图标 + 文件名/大小 + 下载 -->
+                    <template v-else>
+                      <a
+                        class="file-card"
+                        :href="withToken(row.msg.content?.url)"
+                        target="_blank"
+                        :download="row.msg.content?.name"
+                      >
+                        <svg class="file-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z" />
+                          <path d="M14 2v5h5" />
+                        </svg>
+                        <div class="file-info">
+                          <strong>{{ row.msg.content?.name || '文件' }}</strong>
+                          <small>{{ fmtSize(row.msg.content?.size) }}</small>
+                        </div>
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 3v12" />
+                          <path d="m7 11 5 5 5-5" />
+                          <path d="M4 21h16" />
+                        </svg>
+                      </a>
+                    </template>
                   </template>
+                </div>
+                <!-- 消息操作菜单：hover 浮出（复制/引用/撤回）；仅对已确认且未撤回的消息可用 -->
+                <div v-if="row.msg.id > 0 && row.msg.status !== 2" class="msg-actions">
+                  <button v-if="row.msg.type === 1" @click="copyMsg(row.msg)">复制</button>
+                  <button @click="quoteTarget = row.msg">引用</button>
+                  <button
+                    v-if="row.msg.sender_id === auth.user?.id"
+                    class="danger"
+                    @click="recallMsg(row.msg)"
+                  >
+                    撤回
+                  </button>
                 </div>
                 <div class="msg-meta">
                   <span v-if="row.msg._status === 'sending'" class="sending">发送中…</span>
@@ -241,13 +312,45 @@
         </div>
 
         <footer class="composer">
-          <input
-            v-model="draft"
-            placeholder="输入消息，Enter 发送"
-            @input="onDraftInput"
-            @keydown.enter.prevent="send"
-          />
-          <button class="send-btn" :disabled="!draft.trim()" @click="send">发送</button>
+          <!-- 引用预览条：选择"引用"后显示，发送后或点 × 取消 -->
+          <div v-if="quoteTarget" class="quote-bar">
+            <i class="quote-mark"></i>
+            <div class="quote-info">
+              <strong>{{ displayNameOf(quoteTarget.sender_id) }}</strong>
+              <span>{{ preview(quoteTarget) }}</span>
+            </div>
+            <button class="quote-cancel" title="取消引用" @click="quoteTarget = null">×</button>
+          </div>
+
+          <div class="composer-row">
+            <!-- emoji 快捷输入：点击弹出分组面板，点表情插入光标处 -->
+            <div class="tool-wrap">
+              <button :class="['tool-btn', { on: emojiOpen }]" data-tip="表情" aria-label="表情" @click="emojiOpen = !emojiOpen">😊</button>
+              <!-- 外部点击关闭用的透明遮罩：与面板同处 .main 的层叠上下文，层级低于面板 -->
+              <div v-if="emojiOpen" class="mask-transparent" @click="emojiOpen = false"></div>
+              <transition name="pop">
+                <EmojiPicker v-if="emojiOpen" class="emoji-pop" @pick="insertEmoji" />
+              </transition>
+            </div>
+            <!-- 图片 / 文件发送（隐藏 file input 触发） -->
+            <button class="tool-btn" data-tip="发送图片" aria-label="发送图片" :disabled="uploading" @click="imageInput?.click()">📷</button>
+            <button class="tool-btn" data-tip="发送文件" aria-label="发送文件" :disabled="uploading" @click="fileInput?.click()">📎</button>
+            <input
+              ref="composerInput"
+              v-model="draft"
+              placeholder="输入消息，Enter 发送"
+              @input="onDraftInput"
+              @keydown.enter.prevent="send"
+            />
+            <button class="send-btn" :disabled="!draft.trim()" @click="send">发送</button>
+          </div>
+
+          <!-- 文件直传时的进度提示（图片的进度在预览弹窗内显示） -->
+          <div v-if="uploading && !imgPreview" class="upload-tip"><span class="spinner"></span>上传中 {{ uploadPct }}%</div>
+
+          <!-- 隐藏的文件选择器 -->
+          <input ref="imageInput" type="file" accept="image/*" hidden @change="onPickImage" />
+          <input ref="fileInput" type="file" hidden @change="onPickFile" />
         </footer>
       </template>
 
@@ -268,6 +371,44 @@
         <p class="placeholder-sub">在中间列表选择会话，或到「单聊 / 群聊」分类下发起新会话</p>
       </div>
     </main>
+
+    <!-- 图片 lightbox：点击遮罩或 ESC 关闭 -->
+    <transition name="fade">
+      <div v-if="lightboxUrl" class="lightbox" @click="lightboxUrl = ''">
+        <img :src="lightboxUrl" alt="图片预览" />
+      </div>
+    </transition>
+
+    <!-- 图片发送前的本地预览确认弹窗 -->
+    <transition name="fade">
+      <div v-if="imgPreview" class="lightbox" @click.self="cancelImagePreview">
+        <div class="preview-card">
+          <img :src="imgPreview.url" alt="发送预览" />
+          <div class="preview-name">{{ imgPreview.file.name }}（{{ fmtSize(imgPreview.file.size) }}）</div>
+          <div class="preview-actions">
+            <button :disabled="uploading" @click="cancelImagePreview">取消</button>
+            <button class="send-btn sm" :disabled="uploading" @click="confirmSendImage">
+              <span v-if="uploading" class="spinner light"></span>{{ uploading ? `上传中 ${uploadPct}%` : '发送' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 群管理抽屉（仅群聊会话；右侧滑出） -->
+    <transition name="drawer">
+      <MemberDrawer
+        v-if="drawerOpen && isGroup && chat.activeConversationId"
+        :conv-id="chat.activeConversationId"
+        :my-role="chat.activeConversation?.member.role ?? 0"
+        @close="drawerOpen = false"
+      />
+    </transition>
+
+    <!-- 个人资料卡（点导航栏头像弹出） -->
+    <transition name="fade">
+      <ProfileCard v-if="profileOpen" @close="profileOpen = false" />
+    </transition>
   </div>
 </template>
 
@@ -279,23 +420,26 @@
  *   主题切换与退出入口；顶部头像叠连接状态点。
  * - 第 2 栏（.panel）：随分类切换标题与列表内容；顶部搜索框做前端过滤；
  *   发起单聊/群聊的输入区挪到对应分类面板顶部；联系人列表由单聊会话的 peer 派生。
- * - 第 3 栏（.main）：消息区与输入框，功能不变。
+ * - 第 3 栏（.main）：消息区与输入框；消息操作菜单（复制/引用/撤回）、引用回复、
+ *   图片/文件上传发送与放大预览、emoji 快捷输入、群管理抽屉等都在这里编排。
  *
  * 本组件只负责视图与交互编排，实际的消息收发、历史分页、已读上报、
  * WebSocket 重连等逻辑都封装在 chat store 中；分类/搜索状态是组件内局部状态，
  * 不写入、也不清空 chat store 的任何数据。
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore, type LocalMessage } from '@/stores/chat'
-import { useThemeStore } from '@/stores/theme'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import EmojiPicker from '@/components/EmojiPicker.vue'
+import MemberDrawer from '@/components/MemberDrawer.vue'
+import ProfileCard from '@/components/ProfileCard.vue'
+import { useAvatarColor } from '@/utils/avatar'
 import { api, type User } from '@/api'
 
 const auth = useAuthStore()
 const chat = useChatStore()
-const theme = useThemeStore()
 const router = useRouter()
 
 const draft = ref('')
@@ -322,39 +466,38 @@ let suppressAutoScroll = false
 /** 上次发送 typing 帧的时间戳，用于 3 秒节流 */
 let lastTypingAt = 0
 
+/** 引用回复目标：点消息菜单"引用"后置位，发送时带 quote_msg_id */
+const quoteTarget = ref<LocalMessage | null>(null)
+/** emoji 面板开关 */
+const emojiOpen = ref(false)
+/** 群管理抽屉开关（仅群聊会话可用） */
+const drawerOpen = ref(false)
+/** 个人资料卡开关（点导航栏头像弹出） */
+const profileOpen = ref(false)
+/** 图片放大预览（lightbox）的 URL，空串表示关闭 */
+const lightboxUrl = ref('')
+/** 附件上传态：进度百分比与开关（禁用 composer 工具按钮、驱动进度提示） */
+const uploading = ref(false)
+const uploadPct = ref(0)
+/** 选图后的本地预览（确认后才上传发送） */
+const imgPreview = ref<{ file: File; url: string } | null>(null)
+const imageInput = ref<HTMLInputElement | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const composerInput = ref<HTMLInputElement | null>(null)
+
+/** 联系人面板"全网用户"远端搜索结果（防抖 300ms） */
+const remoteUsers = ref<User[]>([])
+const searching = ref(false)
+let searchTimer: number | undefined
+
 /** 当前是否为群聊会话（type 2），决定消息区是否显示发送者昵称 */
 const isGroup = computed(() => chat.activeConversation?.type === 2)
 
 // 群聊发送者昵称缓存：避免每条消息都重复请求同一个用户的资料
 const userCache = ref(new Map<number, User>())
 
-/**
- * 头像/昵称配色盘：按用户 ID 哈希取色，保证同一用户全局同色。
- * 深色主题使用提亮版配色，保证在暗底上的可读性；色相选择饱和度适中的彩色，
- * 既能当文字色也能以低透明度做柔和底色。
- */
-const PALETTE_LIGHT = ['#5b6cf0', '#0e9f8a', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#0284c7', '#65a30d']
-const PALETTE_DARK = ['#8b93f8', '#2dd4bf', '#fbbf24', '#f87171', '#a78bfa', '#f472b6', '#38bdf8', '#a3e635']
-const palette = computed(() => (theme.mode === 'dark' ? PALETTE_DARK : PALETTE_LIGHT))
-
-function colorOf(seed: number | string): string {
-  const s = String(seed)
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-  return palette.value[h % palette.value.length]
-}
-
-/** 头像样式：柔和底色（低透明度的同色系）+ 彩色文字，深色下底色略浓一点 */
-function avatarStyle(seed: number | string) {
-  const c = colorOf(seed)
-  return { background: `${c}${theme.mode === 'dark' ? '33' : '26'}`, color: c }
-}
-
-/** 取昵称首字符作为头像占位（无头像图时的文字头像） */
-function initials(name?: string) {
-  if (!name) return '?'
-  return name.slice(0, 1).toUpperCase()
-}
+// 头像/昵称配色：共享工具（src/utils/avatar.ts），同一用户全局同色、深浅主题各一套色盘
+const { colorOf, avatarStyle, initials } = useAvatarColor()
 
 /**
  * 任意用户的展示名：自己 → 当前昵称；单聊对方 → 会话 peer 信息（无需请求）；
@@ -522,14 +665,17 @@ function onDraftInput() {
   chat.sendTyping(chat.activeConversationId)
 }
 
-/** 发送当前输入的文本消息；store 内部做乐观上屏与 ack 状态回写 */
+/** 发送当前输入的文本消息；store 内部做乐观上屏与 ack 状态回写；有引用时带 quote_msg_id */
 async function send() {
   const text = draft.value.trim()
   if (!text || !chat.activeConversationId) return
   draft.value = ''
+  // 仅引用服务端已确认（有真实 id）的消息才有效
+  const quoteId = quoteTarget.value && quoteTarget.value.id > 0 ? quoteTarget.value.id : undefined
+  quoteTarget.value = null
   nearBottom.value = true
   newBelow.value = 0
-  await chat.sendText(chat.activeConversationId, text)
+  await chat.sendText(chat.activeConversationId, text, quoteId)
   await nextTick()
   scrollToBottom()
 }
@@ -538,6 +684,122 @@ async function send() {
 function resend(m: LocalMessage) {
   if (m._status !== 'failed') return
   void chat.resendMessage(m)
+}
+
+/* ===== 消息操作：复制 / 引用 / 撤回 ===== */
+
+/** 复制文本消息到剪贴板（clipboard API 不可用时回退 execCommand） */
+async function copyMsg(m: LocalMessage) {
+  const text = m.content?.text ?? ''
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 非安全上下文等场景的回退方案
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    ta.remove()
+  }
+}
+
+/** 撤回消息：仅自己的消息显示该入口；store 内乐观置为已撤回 */
+function recallMsg(m: LocalMessage) {
+  chat.recallMessage(m.conversation_id, m.id)
+}
+
+/** 引用块数据：从已加载消息中按 id 找原文，找不到返回 null（UI 显示占位文案） */
+function quoteOf(m: LocalMessage): { name: string; text: string } | null {
+  const q = chat.activeMessages.find((x) => x.id > 0 && x.id === m.quote_msg_id)
+  if (!q) return null
+  return { name: displayNameOf(q.sender_id), text: preview(q) }
+}
+
+/* ===== 图片 / 文件发送 ===== */
+
+/** 附件 URL 附加访问令牌（后端静态资源已鉴权，裸 URL 直接访问会 401） */
+function withToken(url?: string): string {
+  if (!url) return ''
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(auth.accessToken ?? '')}`
+}
+
+/** 文件大小人性化显示 */
+function fmtSize(size?: number): string {
+  if (!size || size <= 0) return ''
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** 选择图片：先本地预览确认，再手动上传发送 */
+function onPickImage(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 清空，允许连续选择同一文件
+  if (!file) return
+  imgPreview.value = { file, url: URL.createObjectURL(file) }
+}
+
+/** 选择文件：直接上传并发送 type=3 文件消息 */
+async function onPickFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  await uploadAndSend(file, 3)
+}
+
+/** 预览弹窗中确认发送图片（type=2） */
+async function confirmSendImage() {
+  const p = imgPreview.value
+  if (!p) return
+  await uploadAndSend(p.file, 2)
+  cancelImagePreview()
+}
+
+/** 关闭图片预览并释放本地对象 URL，避免内存泄漏 */
+function cancelImagePreview() {
+  if (imgPreview.value) URL.revokeObjectURL(imgPreview.value.url)
+  imgPreview.value = null
+}
+
+/** 上传附件并发送对应类型消息（2 图片 / 3 文件）；content 结构按协议带 url/name/size */
+async function uploadAndSend(file: File, type: 2 | 3) {
+  if (!chat.activeConversationId || uploading.value) return
+  uploading.value = true
+  uploadPct.value = 0
+  try {
+    const { url } = await api.uploadAttachment(file, (pct) => (uploadPct.value = pct))
+    const content = type === 2 ? { url, name: file.name } : { url, name: file.name, size: file.size }
+    await chat.sendMessage(chat.activeConversationId, type, content)
+    await nextTick()
+    scrollToBottom()
+  } catch (err) {
+    console.error('[chat] upload failed', err)
+  } finally {
+    uploading.value = false
+  }
+}
+
+/* ===== emoji 快捷输入 ===== */
+
+/** 插入 emoji 到输入框光标处，插入后保持焦点并恢复光标位置 */
+function insertEmoji(e: string) {
+  const el = composerInput.value
+  if (!el) {
+    draft.value += e
+    return
+  }
+  const start = el.selectionStart ?? draft.value.length
+  const end = el.selectionEnd ?? draft.value.length
+  draft.value = draft.value.slice(0, start) + e + draft.value.slice(end)
+  void nextTick(() => {
+    el.focus()
+    const pos = start + e.length
+    el.setSelectionRange(pos, pos)
+  })
 }
 
 function scrollToBottom() {
@@ -661,16 +923,56 @@ async function logout() {
   router.push({ name: 'login' })
 }
 
-// 切换会话后等 DOM 更新再滚到底部，保证定位到最新消息
+// 切换会话后等 DOM 更新再滚到底部，保证定位到最新消息；同时关闭依附于旧会话的浮层
 watch(
   () => chat.activeConversationId,
   async () => {
     nearBottom.value = true
     newBelow.value = 0
+    drawerOpen.value = false
+    quoteTarget.value = null
+    emojiOpen.value = false
     await nextTick()
     scrollToBottom()
   },
 )
+
+// 联系人面板的"全网用户"搜索：本地过滤之外，防抖 300ms 调远端搜索接口
+watch(searchText, (v) => {
+  window.clearTimeout(searchTimer)
+  const q = v.trim()
+  if (category.value !== 'contacts' || !q) {
+    remoteUsers.value = []
+    return
+  }
+  searchTimer = window.setTimeout(async () => {
+    searching.value = true
+    try {
+      // 排除自己，避免搜到自己后发起"与自己的单聊"
+      remoteUsers.value = (await api.searchUsers(q)).filter((u) => u.id !== auth.user?.id)
+    } catch {
+      remoteUsers.value = []
+    } finally {
+      searching.value = false
+    }
+  }, 300)
+})
+
+// ESC 统一关闭各类浮层（lightbox / 图片预览 / emoji 面板 / 抽屉 / 资料卡）
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  lightboxUrl.value = ''
+  emojiOpen.value = false
+  drawerOpen.value = false
+  profileOpen.value = false
+  cancelImagePreview()
+}
+window.addEventListener('keydown', onKeydown)
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  window.clearTimeout(searchTimer)
+  cancelImagePreview() // 释放未发送的本地预览对象 URL
+})
 
 // 新消息到达后滚到底部——但仅当用户本来就贴在底部（或消息是自己发的），
 // 避免用户向上翻历史时被新消息拽回底部；未贴底时改为累计"新消息"胶囊计数
@@ -1075,7 +1377,7 @@ watch(
 .msg.mine { flex-direction: row-reverse; }
 .msg .avatar { width: 34px; height: 34px; font-size: var(--text-sm); margin-top: 2px; }
 
-.msg-main { display: flex; flex-direction: column; align-items: flex-start; max-width: 68%; min-width: 0; }
+.msg-main { display: flex; flex-direction: column; align-items: flex-start; max-width: 68%; min-width: 0; position: relative; }
 .msg.mine .msg-main { align-items: flex-end; }
 
 .sender { font-size: var(--text-xs); font-weight: 500; margin: 0 0 3px 4px; }
@@ -1128,7 +1430,7 @@ watch(
 }
 .msg.mine .bubble.recalled { background: var(--bg-hover); color: var(--text-3); }
 .msg.mine .bubble.recalled::after { display: none; }
-.bubble img { max-width: 240px; border-radius: var(--radius-sm); display: block; }
+.bubble img { max-width: 240px; border-radius: var(--radius-sm); display: block; cursor: zoom-in; }
 .msg.mine .bubble a { color: var(--color-on-primary); text-decoration: underline; }
 
 .msg-meta { font-size: var(--text-xs); color: var(--text-3); margin-top: 4px; display: flex; gap: var(--space-2); padding: 0 2px; }
@@ -1136,10 +1438,11 @@ watch(
 .failed { color: var(--color-danger); cursor: pointer; font-weight: 500; }
 .failed:hover { text-decoration: underline; }
 
-/* ---- 输入区（玻璃拟态） ---- */
+/* ---- 输入区（玻璃拟态；纵向排列：引用条 + 工具行 + 上传进度） ---- */
 .composer {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--border);
   background: var(--bg-glass-strong);
@@ -1147,6 +1450,7 @@ watch(
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
   transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
+.composer-row { display: flex; gap: 8px; align-items: center; }
 .composer input { flex: 1; padding: 10px 14px; border-radius: var(--radius-md); font-size: var(--text-base); }
 .send-btn {
   border: none;
@@ -1218,4 +1522,201 @@ watch(
 @media (max-width: 900px) {
   .panel { width: 220px; }
 }
+
+/* ===== 功能补全：消息菜单 / 引用 / 文件卡片 / lightbox / 工具按钮 / 抽屉与遮罩 ===== */
+
+/* 导航栏头像可点击（打开资料卡） */
+.rail-me.clickable { cursor: pointer; }
+
+/* 联系人列表的分区标题与小字空态 */
+.conv-list li.section-title {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  padding: 8px 12px 2px;
+  cursor: default;
+}
+.conv-list li.section-title:hover { background: transparent; }
+.conv-list li.empty-sm {
+  justify-content: center;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  cursor: default;
+  padding: 6px 12px;
+}
+.conv-list li.empty-sm:hover { background: transparent; }
+
+/* 聊天头部右侧：typing 提示 + 群"成员"按钮 */
+.header-right { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
+.members-btn { font-size: var(--text-xs); padding: 5px 12px; }
+
+/* 消息操作菜单：hover 消息行时浮出在气泡上缘（玻璃小球菜单，参考微信/Telegram） */
+.msg-actions {
+  position: absolute;
+  top: -24px;
+  left: 0;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  z-index: 2;
+  white-space: nowrap;
+}
+.msg.mine .msg-actions { left: auto; right: 0; }
+.msg:hover .msg-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.msg-actions button {
+  border: none;
+  background: transparent;
+  font-size: var(--text-xs);
+  padding: 3px 8px;
+  color: var(--text-2);
+  border-radius: 4px;
+}
+.msg-actions button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
+.msg-actions button.danger { color: var(--color-danger); }
+.msg-actions button.danger:hover:not(:disabled) { background: var(--color-danger-soft); }
+
+/* 气泡内引用块：左侧主色竖条 + 昵称 + 摘要（灰字截断） */
+.quote-block {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 3px solid var(--color-primary);
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 2px var(--radius-sm) var(--radius-sm) 2px;
+  background: rgba(127, 127, 127, 0.12); /* 中性灰底，深浅主题通用 */
+  font-size: var(--text-xs);
+  max-width: 320px;
+}
+.quote-block strong { color: var(--color-primary); font-weight: 600; }
+.quote-block span { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-block .quote-missing { color: var(--text-3); font-style: italic; }
+/* 自己的气泡内引用块反白处理 */
+.msg.mine .quote-block { background: rgba(255, 255, 255, 0.14); border-left-color: rgba(255, 255, 255, 0.7); }
+.msg.mine .quote-block strong { color: var(--color-on-primary); }
+.msg.mine .quote-block span { color: rgba(255, 255, 255, 0.85); }
+.msg.mine .quote-block .quote-missing { color: rgba(255, 255, 255, 0.65); }
+
+/* 文件消息卡片：图标 + 文件名/大小 + 下载图标，颜色继承气泡前景（双方通用） */
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  max-width: 280px;
+  color: inherit;
+  text-decoration: none;
+}
+.file-card:hover { text-decoration: none; }
+.file-icon { flex-shrink: 0; opacity: 0.8; }
+.file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.file-info strong {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-info small { font-size: var(--text-xs); opacity: 0.75; }
+
+/* 引用预览条（输入框上方） */
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+}
+.quote-mark { width: 3px; align-self: stretch; border-radius: var(--radius-full); background: var(--color-primary); }
+.quote-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.quote-info strong { font-size: var(--text-xs); color: var(--color-primary); }
+.quote-info span {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quote-cancel { border: none; background: transparent; color: var(--text-3); font-size: 16px; padding: 2px 8px; }
+.quote-cancel:hover:not(:disabled) { color: var(--text-1); background: transparent; }
+
+/* composer 工具按钮（emoji / 图片 / 文件） */
+.tool-wrap { position: relative; }
+.tool-btn {
+  border: none;
+  background: transparent;
+  font-size: 19px;
+  width: 38px; height: 38px;
+  border-radius: var(--radius-md);
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.tool-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.tool-btn.on { background: var(--color-primary-soft); }
+.emoji-pop { position: absolute; bottom: 46px; left: 0; z-index: 12; }
+@media (prefers-reduced-motion: no-preference) {
+  .pop-enter-active, .pop-leave-active {
+    transition: opacity var(--dur-fast) var(--ease-spring), transform var(--dur-fast) var(--ease-spring);
+  }
+}
+.pop-enter-from, .pop-leave-to { opacity: 0; transform: translateY(8px) scale(0.95); }
+
+/* 上传进度提示 */
+.upload-tip { display: flex; align-items: center; gap: var(--space-2); color: var(--text-3); font-size: var(--text-xs); }
+
+/* lightbox 遮罩（图片放大 / 发送前预览共用） */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 12, 18, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.lightbox > img { max-width: 88vw; max-height: 88vh; border-radius: var(--radius-md); box-shadow: var(--shadow-pop); }
+
+/* 发送前预览确认卡片 */
+.preview-card {
+  background: var(--bg-glass-card);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: min(520px, 90vw);
+}
+.preview-card img {
+  max-width: 100%;
+  max-height: 50vh;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  background: var(--bg-hover);
+}
+.preview-name { font-size: var(--text-sm); color: var(--text-2); word-break: break-all; }
+.preview-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.send-btn.sm { padding: 7px 18px; display: inline-flex; align-items: center; gap: var(--space-2); }
+.spinner.light { border-color: rgba(255, 255, 255, 0.4); border-top-color: #fff; width: 12px; height: 12px; }
+
+/* 群管理抽屉滑入滑出（transform/opacity only，尊重减少动效偏好） */
+@media (prefers-reduced-motion: no-preference) {
+  .drawer-enter-active, .drawer-leave-active {
+    transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+  }
+}
+.drawer-enter-from, .drawer-leave-to { transform: translateX(100%); opacity: 0.5; }
+
+/* emoji 面板外部点击关闭用的透明遮罩 */
+.mask-transparent { position: fixed; inset: 0; z-index: 11; }
 </style>

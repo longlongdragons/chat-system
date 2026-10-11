@@ -2,9 +2,11 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/example/chat/internal/httpx"
 	"github.com/example/chat/internal/middleware"
+	"github.com/example/chat/internal/model"
 	"github.com/example/chat/internal/user"
 	"github.com/gin-gonic/gin"
 )
@@ -12,6 +14,25 @@ import (
 // usersMe 处理 GET /api/v1/users/me：返回当前登录用户完整资料。
 func (d *Deps) usersMe(c *gin.Context) {
 	httpx.OK(c, middleware.CurrentUser(c))
+}
+
+// searchUsers 处理 GET /api/v1/users/search?q=关键词&limit=20：
+// 按用户名/昵称模糊搜索用户，供"添加联系人/拉人入群"场景发现用户，摆脱手输 ID。
+// q 为空时返回空列表而非报错，对应前端清空搜索框的自然交互。
+func (d *Deps) searchUsers(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if q == "" {
+		// 返回与正常结果同构的空数组（JSON [] 而非 null），前端无需特判
+		httpx.OK(c, gin.H{"users": []*model.User{}})
+		return
+	}
+	users, err := d.Users.Search(c.Request.Context(), q, limit)
+	if err != nil {
+		httpx.ServerError(c, err.Error())
+		return
+	}
+	httpx.OK(c, gin.H{"users": users})
 }
 
 // userByID 处理 GET /api/v1/users/:id：按 ID 查询用户公开资料。

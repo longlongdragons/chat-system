@@ -71,6 +71,19 @@ type ConversationView struct {
 	LastMsg *Message `json:"last_msg,omitempty"`
 }
 
+// MemberView 是面向前端的群成员展示结构：成员关系（角色、入群时间）
+// 叠加用户公开资料（用户名、昵称、头像、账号状态）。
+// 刻意只含公开字段，不含邮箱/手机号等隐私信息，供群管理面板渲染成员列表。
+type MemberView struct {
+	UserID    int64     `json:"user_id"`
+	Role      int16     `json:"role"` // 0成员 1管理员 2群主
+	JoinedAt  time.Time `json:"joined_at"`
+	Username  *string   `json:"username,omitempty"`
+	Nickname  string    `json:"nickname"`
+	AvatarURL *string   `json:"avatar_url,omitempty"`
+	Status    int16     `json:"status"` // 用户状态（1正常 2封禁 3删除），前端可据此置灰
+}
+
 // -------- 消息 --------
 
 // Message 对应 messages 表，表示一条聊天消息。

@@ -93,5 +93,10 @@ export const useAuthStore = defineStore('auth', {
       this.user = null
       this.applyTokens(null, null)
     },
+
+    /** 更新个人资料（昵称/签名/头像）：PATCH 后用服务端返回值整体替换本地 user */
+    async updateProfile(payload: { nickname?: string; signature?: string; avatar_url?: string }) {
+      this.user = await api.updateMe(payload)
+    },
   },
 })

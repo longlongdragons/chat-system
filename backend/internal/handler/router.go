@@ -14,11 +14,13 @@ import (
 //	POST   /api/v1/auth/register|login|refresh   （按 IP 限流：30 次/分钟）
 //	POST   /api/v1/auth/logout                   （需登录）
 //	GET    /api/v1/users/me                      （需登录）
+//	GET    /api/v1/users/search                  （需登录，用户名/昵称模糊搜索）
 //	GET    /api/v1/users/:id                     （需登录）
 //	PATCH  /api/v1/users/me                      （需登录）
 //	GET    /api/v1/conversations                 （需登录）
 //	POST   /api/v1/conversations/direct          （需登录）
 //	POST   /api/v1/conversations/group           （需登录）
+//	GET    /api/v1/conversations/:id/members     （需登录，会话成员）
 //	POST   /api/v1/conversations/:id/members     （需登录，群主/管理员）
 //	DELETE /api/v1/conversations/:id/members/:uid（需登录，群主/管理员）
 //	GET    /api/v1/conversations/:id/messages    （需登录，会话成员）
@@ -50,6 +52,8 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	authed.POST("/auth/logout", d.logout)
 
 	authed.GET("/users/me", d.usersMe)
+	// 静态段 /users/search 与参数段 /users/:id 可共存，gin 路由树优先匹配静态段
+	authed.GET("/users/search", d.searchUsers)
 	authed.GET("/users/:id", d.userByID)
 	authed.PATCH("/users/me", d.updateProfile)
 
@@ -57,6 +61,7 @@ func RegisterRoutes(r *gin.Engine, d *Deps) {
 	authed.GET("/conversations", d.listConversations)
 	authed.POST("/conversations/direct", d.createDirect)
 	authed.POST("/conversations/group", d.createGroup)
+	authed.GET("/conversations/:id/members", d.listMembers)
 	authed.POST("/conversations/:id/members", d.addMembers)
 	authed.DELETE("/conversations/:id/members/:uid", d.removeMember)
 

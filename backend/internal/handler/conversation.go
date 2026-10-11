@@ -85,6 +85,23 @@ func (d *Deps) createGroup(c *gin.Context) {
 	httpx.Created(c, conv)
 }
 
+// listMembers 处理 GET /api/v1/conversations/:id/members：会话成员列表（含用户公开资料），
+// 供群管理面板展示。仅会话成员可见，防止越权窥探群的成员构成。
+func (d *Deps) listMembers(c *gin.Context) {
+	convID, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	u := middleware.CurrentUser(c)
+	if _, err := d.Convs.GetMember(c.Request.Context(), convID, u.ID); err != nil {
+		httpx.Forbidden(c, "not_member")
+		return
+	}
+	members, err := d.Convs.ListMembersWithUsers(c.Request.Context(), convID)
+	if err != nil {
+		httpx.ServerError(c, err.Error())
+		return
+	}
+	httpx.OK(c, gin.H{"members": members})
+}
+
 // addMembers 处理 POST /api/v1/conversations/:id/members：拉人入群。
 func (d *Deps) addMembers(c *gin.Context) {
 	convID, _ := strconv.ParseInt(c.Param("id"), 10, 64)

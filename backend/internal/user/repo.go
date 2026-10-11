@@ -174,6 +174,40 @@ func (r *Repo) ListByIDs(ctx context.Context, ids []int64) (map[int64]*model.Use
 	return out, rows.Err()
 }
 
+// likeEscaper 转义 ILIKE 模式串中的特殊字符（%、_、\），
+// 防止用户输入的搜索词被当作通配符解析，造成误匹配或全表慢查询。
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// Search 按用户名/昵称模糊搜索正常状态的用户，供"添加联系人/拉人入群"场景
+// 发现用户（tinode/OpenIM 均有类似的用户搜索发现能力）。
+// 只匹配 username / nickname 两个公开标识，不暴露邮箱/手机号等隐私字段的命中；
+// 关键词先转义再以 %% 包裹做包含匹配，ESCAPE '\' 与 likeEscaper 配套。
+// limit 非法（<=0 或 >50）时回落默认 20，按 id 升序返回保证结果稳定。
+func (r *Repo) Search(ctx context.Context, keyword string, limit int) ([]*model.User, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	pattern := "%" + likeEscaper.Replace(keyword) + "%"
+	rows, err := r.db.Query(ctx, `
+		SELECT `+userCols+` FROM users
+		WHERE status=$1 AND (username ILIKE $2 ESCAPE '\' OR nickname ILIKE $2 ESCAPE '\')
+		ORDER BY id ASC
+		LIMIT $3`, model.UserStatusNormal, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // ListAdmin 是管理后台的用户分页查询：支持按用户名/邮箱/昵称模糊搜索，返回分页数据与总数。
 // 占位符编号（$1、$2…）随是否带 keyword 动态计算，因此用 fmt.Sprintf 拼 LIMIT/OFFSET 的序号，
 // 参数值本身仍走参数化传递，不存在注入风险。

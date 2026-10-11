@@ -74,6 +74,17 @@ export interface Conversation {
   last_msg?: Message
 }
 
+/** 会话成员信息（群管理抽屉用）：role 2=群主 1=管理员 0=普通成员 */
+export interface MemberInfo {
+  user_id: number
+  role: number
+  joined_at: string
+  username?: string
+  nickname: string
+  avatar_url?: string
+  status: number
+}
+
 /** 登录/注册返回：用户信息 + 双令牌（访问令牌 + 刷新令牌） */
 export interface AuthResult {
   user: User
@@ -115,6 +126,20 @@ export const api = {
     return data.data!
   },
 
+  /** 按关键词搜索用户（联系人面板的"全网用户"区块；q 为空时后端返回空数组） */
+  async searchUsers(q: string, limit = 20) {
+    const { data } = await http.get<Envelope<{ users: User[] }>>('/users/search', {
+      params: { q, limit },
+    })
+    return data.data!.users
+  },
+
+  /** 更新我的资料：昵称/签名/头像 URL，传啥改啥 */
+  async updateMe(payload: { nickname?: string; signature?: string; avatar_url?: string }) {
+    const { data } = await http.patch<Envelope<User>>('/users/me', payload)
+    return data.data!
+  },
+
   async listConversations() {
     const { data } = await http.get<Envelope<{ conversations: Conversation[] }>>('/conversations')
     return data.data!.conversations
@@ -149,12 +174,34 @@ export const api = {
   },
 
   /** 上传附件（multipart 表单），返回可访问 URL 与附件元数据，随后作为消息内容发送 */
-  async uploadAttachment(file: File) {
+  async uploadAttachment(file: File, onProgress?: (pct: number) => void) {
     const form = new FormData()
     form.append('file', file)
     const { data } = await http.post<Envelope<{ url: string; attachment: any }>>('/attachments', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      // 上传进度回调：驱动前端的上传中百分比/进度态展示
+      onUploadProgress: (e) => {
+        if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
+      },
     })
     return data.data!
+  },
+
+  /** 群成员列表（需为会话成员），含角色与资料信息 */
+  async listMembers(conversationId: number) {
+    const { data } = await http.get<Envelope<{ members: MemberInfo[] }>>(
+      `/conversations/${conversationId}/members`,
+    )
+    return data.data!.members
+  },
+
+  /** 拉人入群 */
+  async addMember(conversationId: number, userId: number) {
+    await http.post(`/conversations/${conversationId}/members`, { user_id: userId })
+  },
+
+  /** 踢出群成员（群主/管理员） */
+  async removeMember(conversationId: number, userId: number) {
+    await http.delete(`/conversations/${conversationId}/members/${userId}`)
   },
 }

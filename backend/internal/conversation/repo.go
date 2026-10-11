@@ -172,6 +172,33 @@ func (r *Repo) MemberIDs(ctx context.Context, convID int64) ([]int64, error) {
 	return ids, rows.Err()
 }
 
+// ListMembersWithUsers 查询会话成员列表并联查用户公开资料（用户名/昵称/头像/状态），
+// 供群管理面板展示。排除已软删除（退群/被踢）的成员；按角色降序、入群时间升序排序，
+// 群主/管理员排在最前，同等角色按入群先后排列。
+func (r *Repo) ListMembersWithUsers(ctx context.Context, convID int64) ([]*model.MemberView, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT cm.user_id, cm.role, cm.joined_at,
+		       u.username, u.nickname, u.avatar_url, u.status
+		FROM conversation_members cm
+		JOIN users u ON u.id = cm.user_id
+		WHERE cm.conversation_id = $1 AND cm.deleted = false
+		ORDER BY cm.role DESC, cm.joined_at ASC`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.MemberView
+	for rows.Next() {
+		var v model.MemberView
+		if err := rows.Scan(&v.UserID, &v.Role, &v.JoinedAt,
+			&v.Username, &v.Nickname, &v.AvatarURL, &v.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, &v)
+	}
+	return out, rows.Err()
+}
+
 // ListForUser 查询用户的会话列表（含最后一条消息、未读、单聊对端）。
 // 一条 SQL 联查成员状态、会话主体、最后一条消息和单聊配对表；
 // 排序规则：置顶优先，其余按最后消息时间倒序， capped 300 条防止大账户全表扫描。

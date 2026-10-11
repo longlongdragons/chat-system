@@ -56,6 +56,11 @@ export const useChatStore = defineStore('chat', {
       const auth = useAuthStore()
       if (!auth.accessToken) return
 
+      // 桌面通知授权：用户拒绝则静默跳过，不影响聊天功能
+      if ('Notification' in window && Notification.permission === 'default') {
+        void Notification.requestPermission().catch(() => {})
+      }
+
       const client = new ChatClient({
         url: WS_URL,
         token: auth.accessToken,
@@ -190,6 +195,36 @@ export const useChatStore = defineStore('chat', {
         // 本地没有该会话（新会话的第一条消息）：整体刷新会话列表
         void this.loadConversations()
       }
+
+      // 页面不可见时弹桌面通知（自己发的消息不通知）
+      if (document.hidden && msg.sender_id !== useAuthStore().user?.id) {
+        this.notifyDesktop(msg)
+      }
+    },
+
+    /**
+     * 桌面通知：页面不可见时对收到的新消息弹系统通知。
+     * 标题取会话名（单聊为对方昵称），正文为消息摘要；点击通知聚焦窗口。
+     * 未授权/不支持 Notification 的环境一律静默跳过。
+     */
+    notifyDesktop(msg: Message) {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return
+      const conv = this.conversations.find((c) => c.id === msg.conversation_id)
+      const title = conv?.peer?.nickname || conv?.title || '新消息'
+      let body = ''
+      if (msg.status === 2) body = '[已撤回]'
+      else if (msg.type === 1 || msg.type === 4) body = msg.content?.text ?? ''
+      else if (msg.type === 2) body = '[图片]'
+      else if (msg.type === 3) body = '[文件]'
+      else body = '[消息]'
+      try {
+        // tag 以会话为单位去重：同一会话的连续通知只保留最新一条
+        const n = new Notification(title, { body, tag: `conv-${msg.conversation_id}` })
+        n.onclick = () => {
+          window.focus()
+          n.close()
+        }
+      } catch { /* 构造失败（如非安全上下文）静默跳过 */ }
     },
 
     /**
@@ -285,9 +320,9 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async sendText(convId: number, text: string) {
+    async sendText(convId: number, text: string, quoteMsgId?: number) {
       const content = { text }
-      await this.sendMessage(convId, 1, content)
+      await this.sendMessage(convId, 1, content, quoteMsgId)
     },
 
     async sendImage(convId: number, url: string, width: number, height: number) {
@@ -298,8 +333,9 @@ export const useChatStore = defineStore('chat', {
      * 发送消息的统一入口：先生成 client_msg_id 并插入本地占位消息（乐观回显，
      * seq 置为最大值使其临时排在列表末尾），再经 WS 发送并等待 ACK；
      * ACK 超时/失败时把占位消息标记为 failed，供 UI 展示重发入口。
+     * quoteMsgId 为引用回复时被引用消息的 id（协议字段 quote_msg_id）。
      */
-    async sendMessage(convId: number, type: number, content: any) {
+    async sendMessage(convId: number, type: number, content: any, quoteMsgId?: number) {
       if (!this.client) return
       const clientMsgId = crypto.randomUUID()
 
@@ -311,6 +347,7 @@ export const useChatStore = defineStore('chat', {
         client_msg_id: clientMsgId,
         type,
         content,
+        quote_msg_id: quoteMsgId,
         status: 1,
         created_at: new Date().toISOString(),
         _status: 'sending',
@@ -323,13 +360,25 @@ export const useChatStore = defineStore('chat', {
       try {
         await this.client.sendWithAck(
           'message.send',
-          { conversation_id: convId, client_msg_id: clientMsgId, type, content },
+          { conversation_id: convId, client_msg_id: clientMsgId, type, content, quote_msg_id: quoteMsgId },
           clientMsgId,
         )
       } catch (e) {
         local._status = 'failed'
         console.error('[chat] send failed', e)
       }
+    },
+
+    /**
+     * 撤回自己的消息：走 WS message.recall，服务端广播后各端同步；
+     * 本地先乐观置为已撤回（onRecall 收到广播后重复设置无副作用）。
+     */
+    recallMessage(convId: number, messageId: number) {
+      if (!this.client) return
+      this.client.send('message.recall', { conversation_id: convId, message_id: messageId })
+      const list = this.messages[convId] ?? []
+      const msg = list.find((m) => m.id === messageId)
+      if (msg) msg.status = 2
     },
 
     /**
