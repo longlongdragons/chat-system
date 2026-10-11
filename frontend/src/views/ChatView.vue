@@ -75,32 +75,17 @@
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-3.2-3.2" />
           </svg>
-          <input v-model.trim="searchText" placeholder="搜索" />
+          <input v-model.trim="searchText" :placeholder="searchPlaceholder" />
         </div>
       </header>
 
       <!-- 断线时顶部横幅提示（连接状态在窄栏里只有一个状态点，这里给出文字说明） -->
       <div v-if="!chat.connected" class="conn-banner"><i class="dot"></i>连接已断开，正在重连…</div>
 
-      <!-- 分类快捷操作：发起单聊/群聊从旧侧栏挪到对应分类面板顶部 -->
-      <div v-if="category === 'direct'" class="panel-actions">
-        <div class="new-chat">
-          <input v-model.trim="peerIdInput" placeholder="对方用户 ID" @keyup.enter="startDirect" />
-          <button class="ghost-btn" @click="startDirect">发起</button>
-        </div>
-      </div>
-      <div v-else-if="category === 'group'" class="panel-actions">
-        <div class="new-group">
-          <input v-model.trim="groupNameInput" placeholder="群名称" @keyup.enter="startGroup" />
-          <div class="row2">
-            <input
-              v-model.trim="groupMembersInput"
-              placeholder="成员 ID，逗号分隔，如 1,2"
-              @keyup.enter="startGroup"
-            />
-            <button class="ghost-btn" @click="startGroup">发起</button>
-          </div>
-        </div>
+      <!-- 单聊分类不再放"对方用户 ID"输入框：搜索框承担本地过滤 + 全网搜索双重职责；
+           群聊分类顶部为"发起群聊"大按钮（弹窗内多选成员） -->
+      <div v-if="category === 'group'" class="panel-actions">
+        <button class="create-group-btn" @click="groupModalOpen = true">＋ 发起群聊</button>
       </div>
 
       <!-- 联系人分类：本地联系人 + 远端"全网用户"搜索，点击即开聊 -->
@@ -126,7 +111,7 @@
         <!-- 远端搜索区块：输入关键词时防抖调 /users/search -->
         <template v-if="searchText">
           <li class="section-title">全网用户</li>
-          <li v-for="u in remoteUsers" :key="'remote-' + u.id" @click="openContact(u.id)">
+          <li v-for="u in remoteUsers" :key="'remote-' + u.id" @click="openRemoteUser(u.id)">
             <div class="avatar" :style="avatarStyle(u.id)">{{ initials(u.nickname || u.username) }}</div>
             <div class="body">
               <div class="row">
@@ -144,6 +129,8 @@
 
       <!-- 会话列表（消息 / 单聊 / 群聊分类共用，按分类与搜索词过滤） -->
       <ul v-else class="conv-list">
+        <!-- 单聊分类 + 搜索态：本地结果与远端结果分区展示 -->
+        <li v-if="category === 'direct' && searchText" class="section-title">单聊会话</li>
         <li
           v-for="c in filteredConversations"
           :key="c.id"
@@ -169,6 +156,24 @@
           </div>
         </li>
         <li v-if="filteredConversations.length === 0" class="empty">{{ convEmptyText }}</li>
+
+        <!-- 单聊分类搜索时追加"全网用户"远端区块（与联系人面板同一套搜索路径） -->
+        <template v-if="category === 'direct' && searchText">
+          <li class="section-title">全网用户</li>
+          <li v-for="u in remoteUsers" :key="'remote-' + u.id" @click="openRemoteUser(u.id)">
+            <div class="avatar" :style="avatarStyle(u.id)">{{ initials(u.nickname || u.username) }}</div>
+            <div class="body">
+              <div class="row">
+                <strong>{{ u.nickname || u.username || `用户 ${u.id}` }}</strong>
+              </div>
+              <div class="row">
+                <span class="preview">@{{ u.username || u.id }}</span>
+              </div>
+            </div>
+          </li>
+          <li v-if="searching" class="empty-sm">搜索中…</li>
+          <li v-else-if="remoteUsers.length === 0" class="empty-sm">无匹配用户</li>
+        </template>
       </ul>
     </aside>
 
@@ -405,6 +410,11 @@
       />
     </transition>
 
+    <!-- 发起群聊弹窗（群聊分类顶部大按钮触发） -->
+    <transition name="fade">
+      <GroupCreateModal v-if="groupModalOpen" @close="groupModalOpen = false" @created="onGroupCreated" />
+    </transition>
+
     <!-- 个人资料卡（点导航栏头像弹出） -->
     <transition name="fade">
       <ProfileCard v-if="profileOpen" @close="profileOpen = false" />
@@ -418,8 +428,9 @@
  *
  * - 第 1 栏（.rail）：分类导航（消息/单聊/群聊/联系人），附各类未读合计徽标、
  *   主题切换与退出入口；顶部头像叠连接状态点。
- * - 第 2 栏（.panel）：随分类切换标题与列表内容；顶部搜索框做前端过滤；
- *   发起单聊/群聊的输入区挪到对应分类面板顶部；联系人列表由单聊会话的 peer 派生。
+ * - 第 2 栏（.panel）：随分类切换标题与列表内容；顶部搜索框做本地过滤，
+ *   单聊/联系人分类下还会防抖调远端用户搜索（"全网用户"区块）；
+ *   联系人列表由单聊会话的 peer 派生；群聊分类顶部为"发起群聊"大按钮（弹窗多选成员）。
  * - 第 3 栏（.main）：消息区与输入框；消息操作菜单（复制/引用/撤回）、引用回复、
  *   图片/文件上传发送与放大预览、emoji 快捷输入、群管理抽屉等都在这里编排。
  *
@@ -435,18 +446,19 @@ import ThemeToggle from '@/components/ThemeToggle.vue'
 import EmojiPicker from '@/components/EmojiPicker.vue'
 import MemberDrawer from '@/components/MemberDrawer.vue'
 import ProfileCard from '@/components/ProfileCard.vue'
+import GroupCreateModal from '@/components/GroupCreateModal.vue'
 import { useAvatarColor } from '@/utils/avatar'
-import { api, type User } from '@/api'
+import { api, type Conversation, type User } from '@/api'
 
 const auth = useAuthStore()
 const chat = useChatStore()
 const router = useRouter()
 
 const draft = ref('')
-const peerIdInput = ref('')
-const groupNameInput = ref('')
-const groupMembersInput = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
+
+/** 发起群聊弹窗开关（群聊分类顶部大按钮触发） */
+const groupModalOpen = ref(false)
 
 /** 分类导航状态（组件内局部状态，与 chat store 解耦） */
 type Category = 'all' | 'direct' | 'group' | 'contacts'
@@ -536,6 +548,17 @@ const panelTitle = computed(() => {
   return map[category.value]
 })
 
+/** 搜索框 placeholder 随分类提示可搜范围；单聊/联系人支持远端搜用户 */
+const searchPlaceholder = computed(() => {
+  const map: Record<Category, string> = {
+    all: '搜索会话',
+    direct: '搜索会话或用户（昵称/用户名/ID）',
+    group: '搜索群聊',
+    contacts: '搜索联系人或用户（昵称/用户名/ID）',
+  }
+  return map[category.value]
+})
+
 /** 各类目未读合计（导航图标上的徽标） */
 const unreadTotal = computed(() => chat.conversations.reduce((s, c) => s + c.member.unread_count, 0))
 const unreadDirect = computed(() => chat.conversations.reduce((s, c) => (c.type === 1 ? s + c.member.unread_count : s), 0))
@@ -580,7 +603,7 @@ const convEmptyText = computed(() => {
   const map: Record<Category, string> = {
     all: '暂无会话，发起一个吧',
     direct: '暂无单聊会话',
-    group: '暂无群聊会话',
+    group: '还没有群聊，点击上方按钮发起一个',
     contacts: '',
   }
   return map[category.value]
@@ -857,7 +880,7 @@ async function loadOlder() {
 
 /**
  * 按对方用户 ID 打开单聊：后端幂等复用已有会话，刷新列表后直接打开。
- * 供"发起单聊"输入框与联系人列表点击共用。
+ * 供联系人列表与"全网用户"搜索结果点击共用。
  */
 async function openDirectWith(userId: number) {
   try {
@@ -869,36 +892,22 @@ async function openDirectWith(userId: number) {
   }
 }
 
-/** 发起单聊：解析输入框里的用户 ID 后走 openDirectWith */
-async function startDirect() {
-  const id = Number(peerIdInput.value)
-  if (!id || Number.isNaN(id)) return
-  peerIdInput.value = ''
-  await openDirectWith(id)
-}
-
-/** 点击联系人：幂等创建/复用单聊会话并直接打开 */
+/** 点击本地联系人：幂等创建/复用单聊会话并直接打开 */
 async function openContact(userId: number) {
   await openDirectWith(userId)
 }
 
-/** 发起群聊：填群名和逗号分隔的成员 ID（自己作为群主自动入群） */
-async function startGroup() {
-  const name = groupNameInput.value
-  if (!name) return
-  const memberIds = groupMembersInput.value
-    .split(/[,，\s]+/)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0 && n !== auth.user?.id)
-  try {
-    const conv = await api.createGroup(name, memberIds)
-    groupNameInput.value = ''
-    groupMembersInput.value = ''
-    await chat.loadConversations()
-    await chat.openConversation(conv.id)
-  } catch (e) {
-    console.error(e)
-  }
+/** 点击远端搜索结果：先清空搜索框（回到干净列表）再幂等开聊 */
+async function openRemoteUser(userId: number) {
+  searchText.value = ''
+  await openDirectWith(userId)
+}
+
+/** 建群弹窗成功回调：关弹窗 → 刷新会话列表 → 打开新群 */
+async function onGroupCreated(conv: Conversation) {
+  groupModalOpen.value = false
+  await chat.loadConversations()
+  await chat.openConversation(conv.id)
 }
 
 /**
@@ -937,11 +946,13 @@ watch(
   },
 )
 
-// 联系人面板的"全网用户"搜索：本地过滤之外，防抖 300ms 调远端搜索接口
+// 单聊/联系人面板的"全网用户"搜索：本地过滤之外，防抖 300ms 调远端搜索接口
+// （后端按用户名/昵称模糊 + 纯数字按用户 ID 精确命中，前端无需区分）
 watch(searchText, (v) => {
   window.clearTimeout(searchTimer)
   const q = v.trim()
-  if (category.value !== 'contacts' || !q) {
+  const remoteEnabled = category.value === 'contacts' || category.value === 'direct'
+  if (!remoteEnabled || !q) {
     remoteUsers.value = []
     return
   }
@@ -958,13 +969,14 @@ watch(searchText, (v) => {
   }, 300)
 })
 
-// ESC 统一关闭各类浮层（lightbox / 图片预览 / emoji 面板 / 抽屉 / 资料卡）
+// ESC 统一关闭各类浮层（lightbox / 图片预览 / emoji 面板 / 抽屉 / 资料卡 / 建群弹窗）
 function onKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   lightboxUrl.value = ''
   emojiOpen.value = false
   drawerOpen.value = false
   profileOpen.value = false
+  groupModalOpen.value = false
   cancelImagePreview()
 }
 window.addEventListener('keydown', onKeydown)
@@ -1173,7 +1185,7 @@ watch(
   .conn-banner .dot { animation: pulse 1.2s ease-in-out infinite; }
 }
 
-/* ---- 分类快捷操作（发起单聊/群聊） ---- */
+/* ---- 分类快捷操作（群聊分类的"发起群聊"大按钮） ---- */
 .panel-actions {
   display: flex;
   flex-direction: column;
@@ -1181,9 +1193,26 @@ watch(
   padding: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
-.new-chat, .new-group .row2 { display: flex; gap: 6px; }
-.new-chat input, .new-group input { flex: 1; min-width: 0; padding: 7px 10px; font-size: var(--text-xs); }
-.new-group { display: flex; flex-direction: column; gap: 6px; }
+/* 大号描边按钮：默认主色描边透明底，hover 填充主色反白 */
+.create-group-btn {
+  width: 100%;
+  padding: 9px 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-primary);
+  border: 1.5px solid var(--color-primary-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.create-group-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
 .ghost-btn { font-size: var(--text-xs); padding: 6px 10px; flex-shrink: 0; color: var(--color-primary); border-color: var(--color-primary-border); }
 .ghost-btn:hover:not(:disabled) { background: var(--color-primary-soft); }
 

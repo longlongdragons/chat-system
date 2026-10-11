@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/example/chat/internal/model"
@@ -178,9 +179,9 @@ func (r *Repo) ListByIDs(ctx context.Context, ids []int64) (map[int64]*model.Use
 // 防止用户输入的搜索词被当作通配符解析，造成误匹配或全表慢查询。
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-// Search 按用户名/昵称模糊搜索正常状态的用户，供"添加联系人/拉人入群"场景
-// 发现用户（tinode/OpenIM 均有类似的用户搜索发现能力）。
-// 只匹配 username / nickname 两个公开标识，不暴露邮箱/手机号等隐私字段的命中；
+// Search 按用户名/昵称模糊搜索正常状态的用户，关键词为纯数字时还会按用户 ID
+// 精确命中，供"添加联系人/拉人入群"场景发现用户（tinode/OpenIM 均有类似能力）。
+// 只匹配 username / nickname / id 三个公开标识，不暴露邮箱/手机号等隐私字段的命中；
 // 关键词先转义再以 %% 包裹做包含匹配，ESCAPE '\' 与 likeEscaper 配套。
 // limit 非法（<=0 或 >50）时回落默认 20，按 id 升序返回保证结果稳定。
 func (r *Repo) Search(ctx context.Context, keyword string, limit int) ([]*model.User, error) {
@@ -188,11 +189,20 @@ func (r *Repo) Search(ctx context.Context, keyword string, limit int) ([]*model.
 		limit = 20
 	}
 	pattern := "%" + likeEscaper.Replace(keyword) + "%"
+	// 关键词是纯数字时追加按主键精确命中：用户往往直接拿对方 ID 搜人，
+	// 仅靠昵称/用户名模糊匹配会搜不到（数字 ID 与昵称通常无字符重叠）。
+	// 用独立参数 $4 精确比较，避免数字关键词经模糊匹配误命中无关昵称。
+	idClause := ""
+	args := []any{model.UserStatusNormal, pattern, limit}
+	if id, err := strconv.ParseInt(strings.TrimSpace(keyword), 10, 64); err == nil && id > 0 {
+		idClause = " OR id = $4"
+		args = append(args, id)
+	}
 	rows, err := r.db.Query(ctx, `
 		SELECT `+userCols+` FROM users
-		WHERE status=$1 AND (username ILIKE $2 ESCAPE '\' OR nickname ILIKE $2 ESCAPE '\')
+		WHERE status=$1 AND (username ILIKE $2 ESCAPE '\' OR nickname ILIKE $2 ESCAPE '\' `+idClause+`)
 		ORDER BY id ASC
-		LIMIT $3`, model.UserStatusNormal, pattern, limit)
+		LIMIT $3`, args...)
 	if err != nil {
 		return nil, err
 	}
