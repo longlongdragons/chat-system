@@ -266,6 +266,37 @@ func (h *Hub) StartSubscriber(ctx context.Context) error {
 	})
 }
 
+// PresenceSnapshot 返回「与 userID 共处至少一个会话且当前在线」的用户 id 列表，
+// 供连接建立时下发存量在线状态（增量变化由 BroadcastPresence 的事件覆盖）。
+// 运行在连接建立后的异步路径上：查库/查 Redis 失败均返回 nil 并记日志，
+// 调用方据此降级为不下发快照——在线状态允许短暂不准，不允许影响连接可用性。
+func (h *Hub) PresenceSnapshot(ctx context.Context, userID int64) []int64 {
+	if h.convs == nil {
+		return nil
+	}
+	peers, err := h.convs.PeerIDsOfUser(ctx, userID)
+	if err != nil {
+		log.Printf("[ws] presence snapshot peers lookup failed user=%d: %v", userID, err)
+		return nil
+	}
+	if len(peers) == 0 {
+		return nil
+	}
+	// Pipeline 批量查在线（一次 RTT），避免逐用户串行查询
+	online, err := h.presence.AreOnline(ctx, peers)
+	if err != nil {
+		log.Printf("[ws] presence snapshot online check failed user=%d: %v", userID, err)
+		return nil
+	}
+	ids := make([]int64, 0, len(peers))
+	for _, pid := range peers {
+		if online[pid] {
+			ids = append(ids, pid)
+		}
+	}
+	return ids
+}
+
 // BroadcastPresence 广播在线状态变化（上线/下线事件）。
 // 扇出目标 = 状态变化者本人（多端同步自己的状态）+ 与其共处至少一个有效会话的
 // 其他成员（单聊对端、群友），这些人才需要感知该用户的在线状态变化。

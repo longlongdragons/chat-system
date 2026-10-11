@@ -100,6 +100,11 @@ export const useChatStore = defineStore('chat', {
           if (d.status === 1) this.onlineUsers.add(d.user_id)
           else this.onlineUsers.delete(d.user_id)
         }),
+        // 连接建立后服务端下发的存量在线列表（presence 事件只管增量变化，
+        // 没有快照的话后上线者永远看不到先上线的人在线）
+        client.on('presence.snapshot', (d: any) => {
+          ;(d.online_user_ids ?? []).forEach((id: number) => this.onlineUsers.add(id))
+        }),
         client.on('offline.batch', (d: any) => {
           (d.messages ?? []).forEach((m: Message) => this.onNewMessage(m))
         }),

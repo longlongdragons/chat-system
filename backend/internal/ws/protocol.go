@@ -10,7 +10,9 @@ import (
 )
 
 // Frame 是客户端与服务端之间 WebSocket 通信的统一帧结构。
-// T 为帧类型（如 message.send / message.ack / error），ID 是客户端请求的
+// T 为帧类型（上行 message.send/message.read/message.recall/sync.pull/typing/ping；
+// 下行 connected/message.new/message.ack/message.read/message.recall/offline.batch/
+// sync.batch/presence/presence.snapshot/typing/kick/error），ID 是客户端请求的
 // 关联 id，服务端回包（ack/error）会原样带回以便客户端做请求-响应匹配；
 // Data 按帧类型承载不同 payload。
 type Frame struct {

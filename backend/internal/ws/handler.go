@@ -145,7 +145,26 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	// 上线补拉离线消息（异步）
 	go h.deliverOffline(conn)
 
+	// 下发在线状态快照（异步）：presence 事件只覆盖"状态变化"的增量，
+	// 先上线的用户不会重复广播自己，后上线者无从得知存量在线状态。
+	// 快照补存量、事件管增量，客户端合并两者即得完整在线列表。
+	go h.deliverPresenceSnapshot(conn)
+
 	conn.readPump(h)
+}
+
+// deliverPresenceSnapshot 异步查询"与本人有共同会话且当前在线"的成员并一次性下发。
+// 协程生命周期：随连接建立启动一次，返回即退出；查询带超时预算，失败只记日志
+// 降级为不下发（客户端在线列表暂时不全，等对方下次状态变化自愈），绝不阻塞连接建立。
+func (h *Handler) deliverPresenceSnapshot(c *Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ids := h.hub.PresenceSnapshot(ctx, c.UserID)
+	if len(ids) == 0 {
+		return
+	}
+	c.SendFrame("presence.snapshot", map[string]any{"online_user_ids": ids})
 }
 
 // deliverOffline 连接建立后异步补拉离线期间积压的消息，一次性批量下发；
