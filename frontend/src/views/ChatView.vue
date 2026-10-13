@@ -308,6 +308,7 @@
                摆脱行 content-visibility 的绘制裁切与滚动容器 overflow 的裁剪 -->
           <div
             v-if="menuMsg"
+            ref="menuFloat"
             class="msg-actions-float"
             :class="{ flipped: menuFlip }"
             :style="{ left: menuX + 'px', top: menuY + 'px' }"
@@ -781,6 +782,7 @@ watch(
  * 行内浮层一旦凸出行盒模型就会被裁掉（本次 bug 的根因），因此移出行外。
  */
 const menuMsg = ref<LocalMessage | null>(null)
+const menuFloat = ref<HTMLElement | null>(null)
 const menuX = ref(0)
 const menuY = ref(0)
 /** 距视口顶部空间不足时菜单翻到气泡下方 */
@@ -789,20 +791,24 @@ const menuFlip = ref(false)
 let menuPinned = false
 let menuHideTimer: number | undefined
 
-function showMenu(m: LocalMessage, e: MouseEvent) {
-  placeMenu(m, e.currentTarget as HTMLElement)
+/**
+ * 显示菜单并定位：先渲染出浮层，下一帧读取它的真实宽高再算坐标——
+ * 按钮个数会变（非本人/超 2 分钟的消息没有"撤回"键），写死的预估宽度
+ * 会导致自己消息的菜单右缘与气泡右缘对不齐；实测后再定位可精确对齐。
+ * nextTick 在浏览器绘制前执行，用户看不到位置跳变。
+ */
+async function showMenu(m: LocalMessage, e: MouseEvent) {
   menuMsg.value = m
-}
-
-/** 按气泡位置计算浮层坐标：自己消息对齐气泡右缘，对方对齐左缘；上方不足 40px 则向下翻转 */
-function placeMenu(m: LocalMessage, rowEl: HTMLElement) {
+  await nextTick()
+  const rowEl = e.currentTarget as HTMLElement
   const bubble = rowEl.querySelector('.bubble') as HTMLElement | null
   const rect = (bubble ?? rowEl).getBoundingClientRect()
-  const MENU_W = 152 // 预估浮层宽（复制/引用/撤回三键）
-  const MENU_H = 32
-  let x = m.sender_id === auth.user?.id ? rect.right - MENU_W : rect.left
-  x = Math.max(8, Math.min(x, window.innerWidth - MENU_W - 8)) // 夹紧在视口内
-  let y = rect.top - MENU_H - 6
+  const el = menuFloat.value
+  const menuW = el?.offsetWidth ?? 152
+  const menuH = el?.offsetHeight ?? 32
+  let x = m.sender_id === auth.user?.id ? rect.right - menuW : rect.left
+  x = Math.max(8, Math.min(x, window.innerWidth - menuW - 8)) // 夹紧在视口内
+  let y = rect.top - menuH - 6
   menuFlip.value = false
   if (y < 8) {
     y = rect.bottom + 6
