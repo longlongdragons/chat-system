@@ -296,6 +296,11 @@ func (h *Handler) onMessageRecall(ctx context.Context, c *Conn, f *Frame) {
 		MessageID:      p.MessageID,
 		OperatorID:     c.UserID,
 	}); err != nil {
+		// 超窗撤回单独错误码，客户端据此提示"超过 2 分钟不可撤回"
+		if errors.Is(err, message.ErrRecallExpired) {
+			c.SendError("recall_expired", "message is older than 2 minutes and cannot be recalled", f.ID)
+			return
+		}
 		c.SendError("recall_failed", err.Error(), f.ID)
 	}
 }

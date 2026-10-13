@@ -29,7 +29,14 @@ var (
 	ErrMuted     = errors.New("you are muted in this conversation")
 	ErrEmpty     = errors.New("empty message")
 	ErrNotFound  = errors.New("message not found")
+	// ErrRecallExpired 表示消息已超出撤回窗口（见 RecallWindow），
+	// 单独成错误码是为了让客户端给出"超过 2 分钟不能撤回"的明确提示。
+	ErrRecallExpired = errors.New("message is too old to recall")
 )
+
+// RecallWindow 撤回时限：消息发出超过该窗口后不可撤回。
+// 取 2 分钟是 IM 主流惯例（微信/钉钉均为 2 分钟），兼顾误发补救与聊天记录可信度。
+const RecallWindow = 2 * time.Minute
 
 // Broadcaster 由 ws.Hub 实现，避免 message -> ws 的循环依赖
 type Broadcaster interface {
@@ -340,11 +347,29 @@ type RecallInput struct {
 	OperatorID     int64
 }
 
-// Recall 撤回消息：先落库改状态，再广播 "message.recall" 事件让各端即时移除该消息的展示。
+// Recall 撤回消息：成员校验 → 时限校验（2 分钟窗口，微信/钉钉同款惯例）→
+// 落库改状态 → 广播 "message.recall" 事件让各端即时移除该消息的展示。
 func (s *Service) Recall(ctx context.Context, in RecallInput) error {
 	if _, err := s.conv.GetMember(ctx, in.ConversationID, in.OperatorID); err != nil {
 		return ErrNotMember
 	}
+	// 撤回时限判定：先读消息元信息，非本人/已撤回/跨会话统一报 ErrNotFound
+	//（不暴露消息归属细节），超时单独报 ErrRecallExpired 让客户端给出明确提示。
+	m, err := s.conv.GetMessage(ctx, in.MessageID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if m.ConversationID != in.ConversationID || m.SenderID != in.OperatorID || m.Status != 1 {
+		return ErrNotFound
+	}
+	if time.Since(m.CreatedAt) > RecallWindow {
+		return ErrRecallExpired
+	}
+	// 从时限校验到落库之间存在极小的时间竞争窗口，由 RecallMessage 的
+	// WHERE status=1 兜底保证最终一致（至多重复广播一次已撤回事件，前端幂等）。
 	if err := s.conv.RecallMessage(ctx, in.ConversationID, in.MessageID, in.OperatorID); err != nil {
 		return err
 	}

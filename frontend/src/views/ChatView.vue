@@ -317,14 +317,20 @@
           >
             <button v-if="menuMsg.type === 1" @click="copyMsg(menuMsg)">复制</button>
             <button @click="quoteMsg(menuMsg)">引用</button>
+            <!-- 撤回受 2 分钟时限约束（与服务端一致）：超时消息直接不显示入口 -->
             <button
-              v-if="menuMsg.sender_id === auth.user?.id"
+              v-if="canRecall(menuMsg)"
               class="danger"
               @click="recallMsg(menuMsg); closeMenu()"
             >
               撤回
             </button>
           </div>
+
+          <!-- 服务端错误轻提示（如撤回超窗），短暂展示后自动消失 -->
+          <transition name="pill">
+            <div v-if="toast" class="toast-tip">{{ toast }}</div>
+          </transition>
 
           <!-- 用户未贴底时收到新消息：底部浮出胶囊，点击一键回到底部 -->
           <transition name="pill">
@@ -745,10 +751,29 @@ async function copyMsg(m: LocalMessage) {
   }
 }
 
-/** 撤回消息：仅自己的消息显示该入口；store 内乐观置为已撤回 */
+/** 撤回消息：仅自己的消息且在 2 分钟窗口内才显示入口（与服务端 RecallWindow 一致） */
+function canRecall(m: LocalMessage) {
+  return m.sender_id === auth.user?.id && Date.now() - new Date(m.created_at).getTime() < 2 * 60 * 1000
+}
+
 function recallMsg(m: LocalMessage) {
   chat.recallMessage(m.conversation_id, m.id)
 }
+
+/* ---- 服务端错误轻提示：监听 store 的 lastError，映射为友好文案短暂展示 ---- */
+const toast = ref('')
+let toastTimer: number | undefined
+watch(
+  () => chat.lastError,
+  (err) => {
+    if (!err) return
+    // 撤回超窗是用户可感知的业务规则，单独给文案；其余错误统一兜底
+    toast.value = err.code === 'recall_expired' ? '消息已超过 2 分钟，无法撤回' : `操作失败（${err.code}）`
+    chat.lastError = null
+    clearTimeout(toastTimer)
+    toastTimer = window.setTimeout(() => (toast.value = ''), 2500)
+  },
+)
 
 /* ===== 消息操作浮层（hover 显示 + 点击气泡钉住 双模式） =====
  * 菜单渲染在消息区级别、按气泡 getBoundingClientRect 做 fixed 定位：
@@ -1732,6 +1757,22 @@ watch(
 .msg-actions-float button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
 .msg-actions-float button.danger { color: var(--color-danger); }
 .msg-actions-float button.danger:hover:not(:disabled) { background: var(--color-danger-soft); }
+
+/* 服务端错误轻提示：顶部居中胶囊（复用 pill 进出场动画） */
+.toast-tip {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 20;
+  padding: 8px 18px;
+  border-radius: var(--radius-full);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--text-sm);
+  color: var(--text-1);
+}
 
 /* 气泡内引用块：左侧主色竖条 + 昵称 + 摘要（灰字截断） */
 .quote-block {

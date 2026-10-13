@@ -39,6 +39,9 @@ export const useChatStore = defineStore('chat', {
     typingUsers: {} as Record<number, Record<number, true>>,
     // typing 自动消失定时器：key 为 `${conversation_id}:${user_id}`
     typingTimers: {} as Record<string, number>,
+    // 最近一次服务端错误帧（code/message），供 UI 弹轻提示（如撤回超窗）；
+    // UI 展示后自行清空，不影响任何既有流程。
+    lastError: null as { code: string; message?: string } | null,
   }),
 
   getters: {
@@ -113,6 +116,7 @@ export const useChatStore = defineStore('chat', {
         }),
         client.on('error', (d: any) => {
           console.warn('[ws] server error', d)
+          this.lastError = d
         }),
       )
     },
@@ -378,12 +382,14 @@ export const useChatStore = defineStore('chat', {
      * 撤回自己的消息：走 WS message.recall，服务端广播后各端同步；
      * 本地先乐观置为已撤回（onRecall 收到广播后重复设置无副作用）。
      */
+    /**
+     * 撤回消息：发送 WS 帧后不做乐观更新——撤回可能被服务端拒绝（超 2 分钟窗口），
+     * 乐观置撤回会导致"本地显示已撤回但服务端没撤回"的不一致；
+     * 成功时服务端广播 message.recall（含发送者本人），由 onRecall 统一更新。
+     */
     recallMessage(convId: number, messageId: number) {
       if (!this.client) return
       this.client.send('message.recall', { conversation_id: convId, message_id: messageId })
-      const list = this.messages[convId] ?? []
-      const msg = list.find((m) => m.id === messageId)
-      if (msg) msg.status = 2
     },
 
     /**

@@ -513,9 +513,24 @@ func (r *Repo) ListMessages(ctx context.Context, convID, fromSeq int64, limit in
 	return out, rows.Err()
 }
 
+// GetMessage 按主键读取消息的撤回校验所需字段（会话/发送者/状态/时间），
+// 仅供 message.Service.Recall 做撤回前规则判定，不读正文大字段。
+func (r *Repo) GetMessage(ctx context.Context, msgID int64) (*model.Message, error) {
+	m := &model.Message{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, conversation_id, sender_id, status, created_at
+		FROM messages WHERE id=$1`, msgID).
+		Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Status, &m.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // RecallMessage 撤回消息：WHERE 中限定 sender_id=操作者且 status=1，
 // 因此只有发送者本人能撤回、且只能撤回一次；RowsAffected=0 说明消息不存在、
 // 非本人所发或已撤回，统一返回 ErrNotFound（不暴露具体原因）。
+// 撤回时限由 message.Service.Recall 在调用前校验，本函数只做最终兜底。
 func (r *Repo) RecallMessage(ctx context.Context, convID, msgID, operator int64) error {
 	ct, err := r.db.Exec(ctx, `
 		UPDATE messages SET status = 2
