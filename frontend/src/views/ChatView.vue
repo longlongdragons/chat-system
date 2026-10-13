@@ -213,7 +213,11 @@
             <!-- 相邻消息间隔超过 10 分钟时插入时间分隔条 -->
             <div v-if="row.divider" class="time-divider"><span>{{ row.divider }}</span></div>
 
-            <div :class="['msg', { mine: row.msg.sender_id === auth.user?.id }]">
+            <div
+              :class="['msg', { mine: row.msg.sender_id === auth.user?.id }]"
+              @mouseenter="onMsgHover(row.msg, $event)"
+              @mouseleave="onMsgLeave"
+            >
               <div class="avatar" :style="avatarStyle(row.msg.sender_id)">
                 {{ initials(displayNameOf(row.msg.sender_id)) }}
               </div>
@@ -226,7 +230,8 @@
                 >
                   {{ displayNameOf(row.msg.sender_id) }}
                 </div>
-                <div class="bubble" :class="{ recalled: row.msg.status === 2 }">
+                <!-- 点击气泡可"钉住"操作菜单（再点一次或点别处关闭）；hover 由行级事件处理 -->
+                <div class="bubble" :class="{ recalled: row.msg.status === 2 }" @click="onBubbleClick(row.msg, $event)">
                   <template v-if="row.msg.status === 2">
                     <em>消息已撤回</em>
                   </template>
@@ -247,7 +252,7 @@
                       <img
                         :src="withToken(row.msg.content?.url)"
                         :alt="row.msg.content?.name || '图片'"
-                        @click="lightboxUrl = withToken(row.msg.content?.url)"
+                        @click.stop="lightboxUrl = withToken(row.msg.content?.url)"
                       />
                     </template>
                     <template v-else-if="row.msg.type === 4">
@@ -260,6 +265,7 @@
                         :href="withToken(row.msg.content?.url)"
                         target="_blank"
                         :download="row.msg.content?.name"
+                        @click.stop
                       >
                         <svg class="file-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
                           <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z" />
@@ -278,18 +284,8 @@
                     </template>
                   </template>
                 </div>
-                <!-- 消息操作菜单：hover 浮出（复制/引用/撤回）；仅对已确认且未撤回的消息可用 -->
-                <div v-if="row.msg.id > 0 && row.msg.status !== 2" class="msg-actions">
-                  <button v-if="row.msg.type === 1" @click="copyMsg(row.msg)">复制</button>
-                  <button @click="quoteTarget = row.msg">引用</button>
-                  <button
-                    v-if="row.msg.sender_id === auth.user?.id"
-                    class="danger"
-                    @click="recallMsg(row.msg)"
-                  >
-                    撤回
-                  </button>
-                </div>
+                <!-- 操作菜单不在行内渲染：行有 content-visibility（含绘制包含），
+                     凸出行盒的浮层会被裁掉；菜单上移到消息区级别的 fixed 浮层 -->
                 <div class="msg-meta">
                   <span v-if="row.msg._status === 'sending'" class="sending">发送中…</span>
                   <!-- 发送失败可点击重发（沿用原幂等键，服务端去重） -->
@@ -306,6 +302,28 @@
               </div>
             </div>
           </template>
+          </div>
+
+          <!-- 消息操作浮层：hover 显示 / 点击气泡钉住；fixed 定位（按气泡 rect 计算），
+               摆脱行 content-visibility 的绘制裁切与滚动容器 overflow 的裁剪 -->
+          <div
+            v-if="menuMsg"
+            class="msg-actions-float"
+            :class="{ flipped: menuFlip }"
+            :style="{ left: menuX + 'px', top: menuY + 'px' }"
+            @mouseenter="cancelHideMenu"
+            @mouseleave="scheduleHideMenu"
+            @click.stop
+          >
+            <button v-if="menuMsg.type === 1" @click="copyMsg(menuMsg)">复制</button>
+            <button @click="quoteMsg(menuMsg)">引用</button>
+            <button
+              v-if="menuMsg.sender_id === auth.user?.id"
+              class="danger"
+              @click="recallMsg(menuMsg); closeMenu()"
+            >
+              撤回
+            </button>
           </div>
 
           <!-- 用户未贴底时收到新消息：底部浮出胶囊，点击一键回到底部 -->
@@ -732,6 +750,99 @@ function recallMsg(m: LocalMessage) {
   chat.recallMessage(m.conversation_id, m.id)
 }
 
+/* ===== 消息操作浮层（hover 显示 + 点击气泡钉住 双模式） =====
+ * 菜单渲染在消息区级别、按气泡 getBoundingClientRect 做 fixed 定位：
+ * 消息行有 content-visibility:auto（隐含绘制包含 paint containment），
+ * 行内浮层一旦凸出行盒模型就会被裁掉（本次 bug 的根因），因此移出行外。
+ */
+const menuMsg = ref<LocalMessage | null>(null)
+const menuX = ref(0)
+const menuY = ref(0)
+/** 距视口顶部空间不足时菜单翻到气泡下方 */
+const menuFlip = ref(false)
+/** 点击气泡后钉住菜单（不随 hover 消失），点别处/ESC/滚动时关闭 */
+let menuPinned = false
+let menuHideTimer: number | undefined
+
+function showMenu(m: LocalMessage, e: MouseEvent) {
+  placeMenu(m, e.currentTarget as HTMLElement)
+  menuMsg.value = m
+}
+
+/** 按气泡位置计算浮层坐标：自己消息对齐气泡右缘，对方对齐左缘；上方不足 40px 则向下翻转 */
+function placeMenu(m: LocalMessage, rowEl: HTMLElement) {
+  const bubble = rowEl.querySelector('.bubble') as HTMLElement | null
+  const rect = (bubble ?? rowEl).getBoundingClientRect()
+  const MENU_W = 152 // 预估浮层宽（复制/引用/撤回三键）
+  const MENU_H = 32
+  let x = m.sender_id === auth.user?.id ? rect.right - MENU_W : rect.left
+  x = Math.max(8, Math.min(x, window.innerWidth - MENU_W - 8)) // 夹紧在视口内
+  let y = rect.top - MENU_H - 6
+  menuFlip.value = false
+  if (y < 8) {
+    y = rect.bottom + 6
+    menuFlip.value = true
+  }
+  menuX.value = x
+  menuY.value = y
+}
+
+function onMsgHover(m: LocalMessage, e: MouseEvent) {
+  if (menuPinned) return // 已钉住某条消息的菜单时，hover 其他行不挪动
+  if (m.id <= 0 || m.status === 2) return // 未确认/已撤回消息不提供操作
+  cancelHideMenu()
+  showMenu(m, e)
+}
+
+function onMsgLeave() {
+  if (menuPinned) return
+  scheduleHideMenu()
+}
+
+/** 延迟 180ms 收起：给鼠标从消息行移到浮层留缓冲，避免菜单闪烁 */
+function scheduleHideMenu() {
+  cancelHideMenu()
+  menuHideTimer = window.setTimeout(() => closeMenu(), 180)
+}
+
+function cancelHideMenu() {
+  if (menuHideTimer) {
+    clearTimeout(menuHideTimer)
+    menuHideTimer = undefined
+  }
+}
+
+function closeMenu() {
+  cancelHideMenu()
+  menuMsg.value = null
+  menuPinned = false
+}
+
+/** 点击气泡：钉住/取消钉住操作菜单（未确认/已撤回消息不拦截点击，便于"点别处关闭"生效） */
+function onBubbleClick(m: LocalMessage, e: MouseEvent) {
+  if (m.id <= 0 || m.status === 2) return
+  e.stopPropagation() // 阻止 document 级"点别处关闭"在本次点击中立即触发
+  if (menuPinned && menuMsg.value === m) {
+    closeMenu()
+    return
+  }
+  menuPinned = true
+  showMenu(m, e)
+}
+
+/** 菜单"引用"：置引用条、关闭菜单并聚焦输入框 */
+function quoteMsg(m: LocalMessage) {
+  quoteTarget.value = m
+  closeMenu()
+  composerInput.value?.focus()
+}
+
+/** 点击页面其他区域时关闭已钉住的菜单（气泡点击已 stopPropagation） */
+function onDocClick() {
+  if (menuPinned) closeMenu()
+}
+document.addEventListener('click', onDocClick)
+
 /** 引用块数据：从已加载消息中按 id 找原文，找不到返回 null（UI 显示占位文案） */
 function quoteOf(m: LocalMessage): { name: string; text: string } | null {
   const q = chat.activeMessages.find((x) => x.id > 0 && x.id === m.quote_msg_id)
@@ -836,6 +947,8 @@ function onScroll() {
   nearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
   // 用户滚回底部，"新消息"胶囊随之消失
   if (nearBottom.value) newBelow.value = 0
+  // 滚动时气泡位置已变，fixed 定位的菜单留在原地会悬空，直接关闭
+  if (menuMsg.value) closeMenu()
   if (el.scrollTop <= 20) void loadOlder()
 }
 
@@ -941,6 +1054,7 @@ watch(
     drawerOpen.value = false
     quoteTarget.value = null
     emojiOpen.value = false
+    closeMenu()
     await nextTick()
     scrollToBottom()
   },
@@ -969,7 +1083,7 @@ watch(searchText, (v) => {
   }, 300)
 })
 
-// ESC 统一关闭各类浮层（lightbox / 图片预览 / emoji 面板 / 抽屉 / 资料卡 / 建群弹窗）
+// ESC 统一关闭各类浮层（lightbox / 图片预览 / emoji 面板 / 抽屉 / 资料卡 / 建群弹窗 / 消息菜单）
 function onKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   lightboxUrl.value = ''
@@ -977,12 +1091,15 @@ function onKeydown(e: KeyboardEvent) {
   drawerOpen.value = false
   profileOpen.value = false
   groupModalOpen.value = false
+  closeMenu()
   cancelImagePreview()
 }
 window.addEventListener('keydown', onKeydown)
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('click', onDocClick)
   window.clearTimeout(searchTimer)
+  cancelHideMenu()
   cancelImagePreview() // 释放未发送的本地预览对象 URL
 })
 
@@ -1406,7 +1523,7 @@ watch(
 .msg.mine { flex-direction: row-reverse; }
 .msg .avatar { width: 34px; height: 34px; font-size: var(--text-sm); margin-top: 2px; }
 
-.msg-main { display: flex; flex-direction: column; align-items: flex-start; max-width: 68%; min-width: 0; position: relative; }
+.msg-main { display: flex; flex-direction: column; align-items: flex-start; max-width: 68%; min-width: 0; }
 .msg.mine .msg-main { align-items: flex-end; }
 
 .sender { font-size: var(--text-xs); font-weight: 500; margin: 0 0 3px 4px; }
@@ -1578,40 +1695,43 @@ watch(
 .header-right { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
 .members-btn { font-size: var(--text-xs); padding: 5px 12px; }
 
-/* 消息操作菜单：hover 消息行时浮出在气泡上缘（玻璃小球菜单，参考微信/Telegram） */
-.msg-actions {
-  position: absolute;
-  top: -24px;
-  left: 0;
+/* 消息操作浮层：fixed 定位挂视口（坐标按气泡 rect 计算），
+ * 摆脱消息行 content-visibility 的绘制裁切与滚动容器 overflow 的裁剪；
+ * 不透明卡片底 + 边框 + 阴影，双主题下都清晰可读 */
+.msg-actions-float {
+  position: fixed;
   display: flex;
   gap: 2px;
-  padding: 2px;
-  background: var(--bg-glass-strong);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  padding: 3px;
+  background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-pop);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
-  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-  z-index: 2;
+  z-index: 15; /* 高于相邻气泡与"新消息"胶囊 */
   white-space: nowrap;
 }
-.msg.mine .msg-actions { left: auto; right: 0; }
-.msg:hover .msg-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }
-.msg-actions button {
+@media (prefers-reduced-motion: no-preference) {
+  .msg-actions-float { animation: menu-in 0.15s var(--ease-out); }
+  .msg-actions-float.flipped { animation-name: menu-in-down; }
+}
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.96); }
+}
+@keyframes menu-in-down {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+}
+.msg-actions-float button {
   border: none;
   background: transparent;
   font-size: var(--text-xs);
-  padding: 3px 8px;
+  padding: 4px 9px;
   color: var(--text-2);
   border-radius: 4px;
+  white-space: nowrap;
 }
-.msg-actions button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
-.msg-actions button.danger { color: var(--color-danger); }
-.msg-actions button.danger:hover:not(:disabled) { background: var(--color-danger-soft); }
+.msg-actions-float button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-1); }
+.msg-actions-float button.danger { color: var(--color-danger); }
+.msg-actions-float button.danger:hover:not(:disabled) { background: var(--color-danger-soft); }
 
 /* 气泡内引用块：左侧主色竖条 + 昵称 + 摘要（灰字截断） */
 .quote-block {
