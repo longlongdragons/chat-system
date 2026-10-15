@@ -79,3 +79,20 @@ A客户端            gateway-1              Redis             PG              g
 2. **同步落库 + 幂等**（tinode 同款）：ack 即"已持久化"，语义简单可靠；异步批量落库列为触发式演进项。
 3. **全量广播换路由简单**（goim job 的简化版）：网关 ≤10 实例时最优解；更多实例再分片。
 4. **限流/鉴权/审计收口在基建层**：HTTP 与 WS 共用同一个 `ratelimit.Limiter` 与同一套验签核心，避免两处实现漂移。
+
+## 六、核心业务流程
+
+1. **认证**：注册/登录 → bcrypt 校验密码 → RSA 私钥签 JWT（access 15 分钟 + refresh 7 天）→ 前端 axios 拦截器自动刷新 → WS 握手用 `?token=` 同款验签（`internal/auth`、`internal/middleware`）。
+2. **发消息**：见第四节时序图。链路要点——限流（60 条/分）→ 成员/禁言校验 → 敏感词过滤 → `client_msg_id` 幂等 → Redis INCR 分配会话内 seq → 落库 → ack（ack 即"已持久化"）→ 在线扇出 / 离线写 `offline_messages`。
+3. **断线重连**：WS 心跳（25s ping / 75s 读超时）→ 前端指数退避重连 → `sync.pull` 按 seq 增量补齐缺口；发送幂等键保证重发不重复。
+4. **在线状态（presence）**：连接注册/注销时 Redis 在线计数 ±1，归零才判彻底离线；状态变化只推"本人 + 共同会话成员"（tinode 关系链推送模型），不做全网广播。
+5. **管理后台**：封禁用户（全端 token 吊销 + WS 踢下线）、敏感词热更新（RWMutex 整体换词表）、审计日志（异步攒批写库，不阻塞请求路径）。
+6. **前端分层**：`views/`（视图）→ `stores/`（Pinia 状态与业务编排）→ `api/` + `ws/`（HTTP/WS 客户端封装），视图不直接发请求。
+
+## 七、架构风格定位（FAQ）
+
+**不是传统四层架构，也不是"Go 官方架构"（Go 官方从不规定架构）。** 它是两者的混合：
+
+- **进程级**：IM 领域特有的**连接层 / 业务层双进程拆分**——gateway 只管长连接、api 只管 HTTP（goim comet/logic、OpenIM msggateway/msgtransfer 的轻量版），与传统单体 Web 应用思路不同。
+- **代码级**：Go 社区惯例的 `cmd/` + `internal/` **按域分包**。与四层架构的对应：`handler ≈ controller`、`service ≈ service`、`repo ≈ dao`、`model 包 ≈ model`；区别是不按层建大包，而是 `message/` 一个包内自带 service + repo，聚合度更高。
+- **依赖方向**：装配层（main.go）构造期注入全部依赖（`handler.Deps`），无包级全局变量——借 Clean Architecture 的依赖规则，但不引入 DDD 的聚合根/值对象仪式。
